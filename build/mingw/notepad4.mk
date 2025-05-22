@@ -14,15 +14,15 @@ INCDIR = \
 
 LDFLAGS += -L"$(BINFOLDER)/obj"
 
-LDLIBS += -limm32
+LDLIBS += -limm32 -ldwmapi
 
 editlexers_src = $(wildcard $(editlexers_dir)/*.cpp)
 editlexers_obj = $(patsubst $(editlexers_dir)/%.cpp,$(OBJDIR)/%.obj,$(editlexers_src))
 
-c_src = $(wildcard $(SRCDIR)/*.c)
+c_src = $(wildcard $(SRCDIR)/*.c) 
 c_obj = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.obj,$(c_src))
 
-cpp_src = $(wildcard $(SRCDIR)/*.cpp)
+cpp_src = $(wildcard $(SRCDIR)/*.cpp) $(wildcard $(SRCDIR)/DarkMode/*.cpp)
 cpp_obj = $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.obj,$(cpp_src))
 
 rc_src = $(wildcard $(SRCDIR)/*.rc)
@@ -31,7 +31,7 @@ rc_obj = $(patsubst $(SRCDIR)/%.rc,$(OBJDIR)/%.res,$(rc_src))
 all: $(OBJDIR) $(NAME)
 
 $(OBJDIR):
-	@mkdir -p $(OBJDIR)
+	@mkdir -p $(OBJDIR) $(OBJDIR)/DarkMode
 
 $(NAME): $(editlexers_obj) $(c_obj) $(cpp_obj) $(rc_obj)
 	$(CXX) $^ $(LDFLAGS) -lscintilla $(LDLIBS) -o $(BINFOLDER)/$@
