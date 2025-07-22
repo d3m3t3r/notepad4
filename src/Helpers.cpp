@@ -20,7 +20,6 @@
 *
 ******************************************************************************/
 
-struct IUnknown;
 #include <windows.h>
 #include <windowsx.h>
 #include <dlgs.h>
@@ -1600,12 +1599,6 @@ bool PathGetRealPath(HANDLE hFile, LPCWSTR lpszSrc, LPWSTR lpszDest) noexcept {
 }
 
 #if _WIN32_WINNT < _WIN32_WINNT_WIN8
-#if defined(_MSC_BUILD) && !defined(FILE_INVALID_FILE_ID)
-struct FILE_ID_128 {
-	BYTE Identifier[16];
-};
-#endif // Win32 XP v141_xp toolset with Windows 7 SDK.
-
 enum { FileIdInfo = 0x12 };
 struct FILE_ID_INFO {
 	ULONGLONG VolumeSerialNumber;

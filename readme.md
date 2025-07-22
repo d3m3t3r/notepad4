@@ -51,7 +51,7 @@ Latest development builds (artifacts in Release configuration for each compiler 
 		* [C Standard Library](tools/lang/C.c), up to C23.
 		* [C++ STL](tools/lang/CPP.cpp), up to C++23.
 	* [Cangjie (仓颉)](tools/lang/Cangjie.cj), up to October 2024.
-	* [CSS Style Sheet](tools/lang/CSS.css), up to May 2025.
+	* [CSS Style Sheet](tools/lang/CSS.css), up to July 2025.
 		* [SCSS Style Sheet](tools/lang/SCSS.scss), up to Dart Sass 1.50.
 		* [Less Style Sheet](tools/lang/Less.less), up to Less 4.1.
 		* [HSS Style Sheet](tools/lang/HSS.hss)
@@ -176,11 +176,11 @@ Latest development builds (artifacts in Release configuration for each compiler 
 * Other various major or minor changes and tweaks
 
 ## Supported Operating Systems:
-* Windows XP, Vista, 7, 8, 8.1, 10 and 11, both 32-bit and 64-bit
-* Windows Server 2003, 2008, 2012, 2016, 2019, 2022 and 2025, both 32-bit and 64-bit
-* Windows 10 on ARM64, Windows 8/8.1 on ARM32 (Windows RT)
-* Unix-like Operating Systems (Linux, macOS, BSD, etc.) using [Wine](https://www.winehq.org/)
-* [ReactOS](https://www.reactos.org/)
+* Windows Vista, 7, 8, 8.1, 10 and 11, both 32-bit and 64-bit
+* Windows Server 2008, 2012, 2016, 2019, 2022 and 2025, both 32-bit and 64-bit
+* Windows 10 and 11 on ARM64
+* Windows XP, Windows Server 2003 and Windows 8/8.1 on ARM32 (Windows RT) using [v25.06r5696](https://github.com/zufuliu/notepad4/releases/tag/v25.06r5696)
+* Other systems using [Wine](https://www.winehq.org/)
 
 ## Contributors:
 * [XhmikosR](https://xhmikosr.github.io/notepad2-mod/)

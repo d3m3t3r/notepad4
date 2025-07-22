@@ -18,7 +18,6 @@
 *
 ******************************************************************************/
 
-struct IUnknown;
 #include <windows.h>
 #include <windowsx.h>
 #include <shlwapi.h>
@@ -56,6 +55,7 @@ extern int iDefaultEOLMode;
 extern bool bFixLineEndings;
 extern bool bAutoStripBlanks;
 extern int iChangeHistoryMarker;
+extern int iSelectOption;
 
 // Default Codepage and Character Set
 extern int iDefaultCodePage;
@@ -142,6 +142,7 @@ void EditSetNewText(LPCSTR lpstrText, DWORD cbText, Sci_Line lineCount) noexcept
 	SciCall_SetReadOnly(false);
 	SciCall_Cancel();
 	SciCall_SetChangeHistory(SC_CHANGE_HISTORY_DISABLED);
+	SciCall_SetUndoSelectionHistory(SC_UNDO_SELECTION_HISTORY_DISABLED);
 	SciCall_SetUndoCollection(false);
 	SciCall_EmptyUndoBuffer();
 	SciCall_ClearAll();
@@ -185,6 +186,7 @@ void EditSetNewText(LPCSTR lpstrText, DWORD cbText, Sci_Line lineCount) noexcept
 	SciCall_EmptyUndoBuffer();
 	SciCall_SetSavePoint();
 	SciCall_SetChangeHistory(iChangeHistoryMarker);
+	SciCall_SetUndoSelectionHistory((iSelectOption & SelectOption_UndoRedoRememberSelection) ? (SC_UNDO_SELECTION_HISTORY_ENABLED | SC_UNDO_SELECTION_HISTORY_SCROLL): SC_UNDO_SELECTION_HISTORY_DISABLED);
 
 	bFreezeAppTitle = false;
 }
@@ -220,6 +222,7 @@ bool EditConvertText(UINT cpSource, UINT cpDest) noexcept {
 	SciCall_SetReadOnly(false);
 	SciCall_Cancel();
 	SciCall_SetChangeHistory(SC_CHANGE_HISTORY_DISABLED);
+	SciCall_SetUndoSelectionHistory(SC_UNDO_SELECTION_HISTORY_DISABLED);
 	SciCall_SetUndoCollection(false);
 	SciCall_EmptyUndoBuffer();
 	SciCall_ClearAll();
@@ -244,6 +247,7 @@ bool EditConvertText(UINT cpSource, UINT cpDest) noexcept {
 		SciCall_SetSavePoint();
 	}
 	SciCall_SetChangeHistory(iChangeHistoryMarker);
+	SciCall_SetUndoSelectionHistory((iSelectOption & SelectOption_UndoRedoRememberSelection) ? (SC_UNDO_SELECTION_HISTORY_ENABLED | SC_UNDO_SELECTION_HISTORY_SCROLL): SC_UNDO_SELECTION_HISTORY_DISABLED);
 	UpdateLineNumberWidth();
 	return true;
 }
@@ -268,6 +272,7 @@ void EditConvertToLargeMode() noexcept {
 	SciCall_SetReadOnly(false);
 	SciCall_Cancel();
 	SciCall_SetChangeHistory(SC_CHANGE_HISTORY_DISABLED);
+	SciCall_SetUndoSelectionHistory(SC_UNDO_SELECTION_HISTORY_DISABLED);
 	SciCall_SetUndoCollection(false);
 	SciCall_EmptyUndoBuffer();
 	SciCall_ClearAll();
@@ -292,6 +297,7 @@ void EditConvertToLargeMode() noexcept {
 	SciCall_EmptyUndoBuffer();
 	SciCall_SetSavePoint();
 	SciCall_SetChangeHistory(iChangeHistoryMarker);
+	SciCall_SetUndoSelectionHistory((iSelectOption & SelectOption_UndoRedoRememberSelection) ? (SC_UNDO_SELECTION_HISTORY_ENABLED | SC_UNDO_SELECTION_HISTORY_SCROLL): SC_UNDO_SELECTION_HISTORY_DISABLED);
 
 	Style_SetLexer(pLexCurrent, true);
 	bLargeFileMode = true;
@@ -4574,7 +4580,6 @@ void AddBackslashComboBoxSetup(HWND hwnd) noexcept {
 
 extern int iFindReplaceOption;
 extern int iFindReplaceOpacityLevel;
-extern int iSelectOption;
 
 void EditSaveSelectionAsFindText(EDITFINDREPLACE *lpefr, int menu, bool findSelection) noexcept {
 	if (!findSelection && (iSelectOption & SelectOption_CopySelectionAsFindText) == 0) {

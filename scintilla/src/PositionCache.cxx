@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <array>
 #include <map>
 #include <optional>
 #include <algorithm>
@@ -157,7 +158,7 @@ int LineLayout::LineLength(int line) const noexcept {
 int LineLayout::LineLastVisible(int line, Scope scope) const noexcept {
 	if (line < 0) {
 		return 0;
-	} else if ((line >= lines - 1) || !lineStarts) {
+	} else if ((line + 1 >= lines) || !lineStarts) {
 		if (PartialPosition()) {
 			return lastSegmentEnd;
 		}
@@ -177,15 +178,15 @@ bool LineLayout::InLine(int offset, int line) const noexcept {
 }
 
 int LineLayout::SubLineFromPosition(int posInLine, PointEnd pe) const noexcept {
-	if (!lineStarts || (posInLine > maxLineLength)) {
+	if (lines <= 1 || (posInLine >= numCharsBeforeEOL)) {
 		return lines - 1;
 	}
 
 	// Return subline not start of next for PointEnd::subLineEnd
-	posInLine += FlagSet(pe, PointEnd::subLineEnd) ? 1 : 0;
+	posInLine -= FlagSet(pe, PointEnd::subLineEnd) ? 1 : 0;
 	int line = 1;
 	for (; line < lines; line++) {
-		if (lineStarts[line] <= posInLine) {
+		if (lineStarts[line] > posInLine) {
 			break;
 		}
 	}
@@ -376,7 +377,7 @@ void LineLayout::WrapLine(const Document *pdoc, Sci::Position posLineStart, Wrap
 	auto CharacterBoundary = [=](Sci::Position i, int moveDir, bool checkLineEnd = true) noexcept -> Sci::Position {
 		return pdoc->MovePositionOutsideChar(i + posLineStart, moveDir, checkLineEnd) - posLineStart;
 	};
-	auto UpdateWrapBreak = [=](Sci::Position i, WrapBreak &wbPrev) noexcept -> void {
+	auto UpdateWrapBreak = [=, this](Sci::Position i, WrapBreak &wbPrev) noexcept -> void {
 		if (UTF8IsAscii(chars[i])) {
 			wbPrev = static_cast<WrapBreak>(ASCIIWrapBreakTable[static_cast<uint8_t>(chars[i])]);
 		} else if (wrapState == Wrap::Auto) {
@@ -1046,16 +1047,12 @@ BreakFinder::BreakFinder(const LineLayout *ll_, const Selection *psel, Range lin
 	}
 
 	if (FlagSet(breakFor, BreakFor::Selection)) {
-		const SelectionPosition posStart(posLineStart);
-		const SelectionPosition posEnd(posLineStart + endPos);
-		const SelectionSegment segmentLine(posStart, posEnd);
+		const SelectionSegment segmentLine(posLineStart, posLineStart + lineRange.end);
 		for (size_t r = 0; r < psel->Count(); r++) {
 			const SelectionSegment portion = psel->Range(r).Intersect(segmentLine);
-			if (!(portion.start == portion.end)) {
-				if (portion.start.IsValid())
-					Insert(portion.start.Position() - posLineStart);
-				if (portion.end.IsValid())
-					Insert(portion.end.Position() - posLineStart);
+			if (!portion.Empty()) {
+				Insert(portion.start.Position() - posLineStart);
+				Insert(portion.end.Position() - posLineStart);
 			}
 		}
 		// On the curses platform, the terminal is drawing its own caret, so add breaks around the
@@ -1216,11 +1213,7 @@ void PositionCacheEntry::ResetClock() noexcept {
 	}
 }
 
-PositionCache::PositionCache() {
-	clock = 1;
-	allClear = true;
-	pces.resize(1024);
-}
+PositionCache::PositionCache() = default;
 
 void PositionCache::Clear() noexcept {
 	if (!allClear) {
@@ -1268,7 +1261,7 @@ void PositionCache::MeasureWidths(Surface *surface, const Style &style, uint16_t
 		}
 #else
 		for (size_t i = 0; i < length; i++) {
-			positions[i] = characterWidth * (i + 1);
+			positions[i] = characterWidth * static_cast<XYPOSITION>(i + 1);
 		}
 #endif
 		return;
@@ -1331,7 +1324,7 @@ void PositionCache::MeasureWidths(Surface *surface, const Style &style, uint16_t
 		// constructed here to reduce lock time
 		const size_t length = sv.length();
 		const size_t offset = length*sizeof(XYPOSITION);
-		std::unique_ptr<char[]> positions_ = make_unique_for_overwrite<char[]>(offset + length);
+		std::unique_ptr<char[]> positions_ = std::make_unique_for_overwrite<char[]>(offset + length);
 		memcpy(&positions_[0], positions, offset);
 		memcpy(&positions_[offset], sv.data(), length);
 
