@@ -104,7 +104,6 @@ bool EditPrint(HWND hwnd, LPCWSTR pszDocTitle, BOOL bDefault) noexcept {
 	memset(&pdlg, 0, sizeof(PRINTDLG));
 	pdlg.lStructSize = sizeof(PRINTDLG);
 	pdlg.hwndOwner = GetParent(hwnd);
-	pdlg.hInstance = g_hInstance;
 	pdlg.Flags = PD_USEDEVMODECOPIES | PD_ALLPAGES | PD_RETURNDC;
 	pdlg.nFromPage = 1;
 	pdlg.nToPage = 1;
@@ -255,7 +254,7 @@ bool EditPrint(HWND hwnd, LPCWSTR pszDocTitle, BOOL bDefault) noexcept {
 	}
 
 	const DOCINFO di = {sizeof(DOCINFO), pszDocTitle, nullptr, nullptr, 0};
-	if (StartDoc(hdc, &di) < 0) {
+	if (StartDoc(hdc, &di) <= 0) {
 		DeleteDC(hdc);
 		if (fontHeader) {
 			DeleteObject(fontHeader);
@@ -1334,6 +1333,15 @@ void EditFormatCode(int menu) noexcept {
 				const uint8_t style = styledText[offset];
 				if (style > pLex->commentStyleMarker) {
 					const uint8_t ch = textBuffer[offset];
+					if (ch == '\\' && style != pLex->escapeCharacterStyle) {
+						// line continuation
+						const uint8_t chNext = textBuffer[offset + 1];
+						if (chNext == '\n' || chNext == '\r') {
+							offset += (chNext == '\r' && textBuffer[offset + 2] == '\n') ? 2 : 1;
+							continue;
+						}
+					}
+
 					int spaceOption = SpaceOption_None;
 					if (style != stylePrev) {
 						spaceOption = AddStyleSeparator(pLex, ch, chPrev, style);
