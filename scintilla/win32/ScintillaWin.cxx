@@ -151,7 +151,7 @@ constexpr Point PointFromLParam(LPARAM lParam) noexcept {
 }
 
 inline bool KeyboardIsKeyDown(int key) noexcept {
-	return (::GetKeyState(key) & 0x8000) != 0;
+	return ::GetKeyState(key) < 0;
 }
 
 // Bit 24 is the extended keyboard flag and the numeric keypad is non-extended
@@ -971,7 +971,9 @@ bool ScintillaWin::UpdateRenderingParams(bool force) noexcept {
 		UINT clearTypeContrast = 0;
 		if (SUCCEEDED(hr) && monitorRenderingParams &&
 			::SystemParametersInfo(SPI_GETFONTSMOOTHINGCONTRAST, 0, &clearTypeContrast, 0) != 0) {
-			if (clearTypeContrast >= 1000 && clearTypeContrast <= 2200) {
+			constexpr UINT minContrast = 1000;
+			constexpr UINT maxContrast = 2200;
+			if (clearTypeContrast >= minContrast && clearTypeContrast <= maxContrast) {
 				const FLOAT gamma = static_cast<FLOAT>(clearTypeContrast) / 1000.0f;
 				pIDWriteFactory->CreateCustomRenderingParams(gamma,
 					monitorRenderingParams->GetEnhancedContrast(),
@@ -3067,20 +3069,33 @@ void Editor::EndBatchUpdate() noexcept {
 
 namespace {
 
-constexpr unsigned int safeFoldingSize = 20;
+constexpr unsigned int safeFoldingSize = 16; // UTF8MaxBytes*maxExpansionCaseConversion
 constexpr uint8_t highByteFirst = 0x80;
 constexpr uint8_t highByteLast = 0xFF;
 constexpr uint8_t minTrailByte = 0x31;
 
-// CreateFoldMap creates a fold map by calling platform APIs so will differ between platforms.
-void CreateFoldMap(int codePage, FoldMap &foldingMap) {
+class CaseFolderDBCS final : public CaseFolderTable {
+	const DBCSByteMask &byteMask;
+	// Allocate the expandable storage here so that it does not need to be reallocated
+	// for each call to Fold.
+	FoldMap foldingMap;
+public:
+	CaseFolderDBCS(int codePage, const DBCSByteMask &mask);
+	size_t Fold(char *folded, size_t sizeFolded, const char *mixed, size_t lenMixed) const override;
+};
+
+// creates a fold map by calling platform APIs so will differ between platforms.
+CaseFolderDBCS::CaseFolderDBCS(int codePage, const DBCSByteMask &mask): byteMask {mask} {
+	// const ElapsedPeriod period;
 	for (unsigned char byte1 = highByteFirst + 1; byte1 < highByteLast; byte1++) {
-		if (DBCSIsLeadByte(codePage, byte1)) {
+		if (byteMask.IsLeadByte(byte1)) {
 			for (unsigned char byte2 = minTrailByte; byte2 < highByteLast; byte2++) {
-				if (DBCSIsTrailByte(codePage, byte2)) {
-					const char sCharacter[2] = { static_cast<char>(byte1), static_cast<char>(byte2) };
+				if (byteMask.IsTrailByte(byte2)) {
+					const uint16_t index = DBCSIndex(byte1, byte2);
+					const DBCSPair pair{ static_cast<char>(byte1), static_cast<char>(byte2) };
+					foldingMap[index] = pair;
 					wchar_t codePoint[4]{};
-					const int lenUni = ::MultiByteToWideChar(codePage, MB_ERR_INVALID_CHARS, sCharacter, 2, codePoint, _countof(codePoint));
+					const int lenUni = ::MultiByteToWideChar(codePage, MB_ERR_INVALID_CHARS, pair.chars, 2, codePoint, _countof(codePoint));
 					if (lenUni == 1 && codePoint[0]) {
 						// DBCS pair must produce a single Unicode BMP code point
 						// Could create a DBCS -> Unicode conversion map here
@@ -3093,7 +3108,6 @@ void CreateFoldMap(int codePage, FoldMap &foldingMap) {
 								back, std::size(back));
 							if (lengthBack == 2) {
 								// Only allow cases where input length and folded length are both 2
-								const uint16_t index = DBCSIndex(byte1, byte2);
 								foldingMap[index] = { back[0], back[1] };
 							}
 						}
@@ -3102,44 +3116,25 @@ void CreateFoldMap(int codePage, FoldMap &foldingMap) {
 			}
 		}
 	}
+	// const double duration = period.Duration()*1e3;
+	// printf("%s(%u) duration=%.6f\n", __func__, cp, duration);
 }
 
-class CaseFolderDBCS final : public CaseFolderTable {
-	// Allocate the expandable storage here so that it does not need to be reallocated
-	// for each call to Fold.
-	UINT cp;
-	FoldMap foldingMap;
-public:
-	explicit CaseFolderDBCS(UINT cp_): cp{cp_} {
-		// const ElapsedPeriod period;
-		CreateFoldMap(cp, foldingMap);
-		// const double duration = period.Duration()*1e3;
-		// printf("%s(%u) duration=%.6f\n", __func__, cp, duration);
-	}
-	size_t Fold(char *folded, size_t sizeFolded, const char *mixed, size_t lenMixed) const override;
-};
-
-size_t CaseFolderDBCS::Fold(char *folded, size_t sizeFolded, const char *mixed, size_t lenMixed) const {
+size_t CaseFolderDBCS::Fold(char *folded, [[maybe_unused]] size_t sizeFolded, const char *mixed, size_t lenMixed) const {
 	// This loop outputs the same length as input as for each char 1-byte -> 1-byte; 2-byte -> 2-byte
+	assert(sizeFolded >= lenMixed);
 	size_t lenOut = 0;
 	for (size_t i = 0; i < lenMixed; ) {
-		const ptrdiff_t lenLeft = lenMixed - i;
-		const char ch = mixed[i++];
-		if ((lenLeft >= 2) && DBCSIsLeadByte(cp, ch) && ((lenOut + 2) <= sizeFolded)) {
+		const unsigned char ch = mixed[i++];
+		const unsigned char ch2 = mixed[i + 1];
+		if (byteMask.IsLeadByte(ch) && byteMask.IsTrailByte(ch2)) {
 			i++;
-			const char ch2 = mixed[i];
 			const uint16_t ind = DBCSIndex(ch, ch2);
-			const char *pair = foldingMap.at(ind).chars;
-			if (pair[0]) {
-				folded[lenOut++] = pair[0];
-				folded[lenOut++] = pair[1];
-			} else {
-				folded[lenOut++] = ch;
-				folded[lenOut++] = ch2;
-			}
-		} else if ((lenOut + 1) <= sizeFolded) {
-			const unsigned char uch = ch;
-			folded[lenOut++] = mapping[uch];
+			const char *pair = foldingMap[ind].chars;
+			folded[lenOut++] = pair[0];
+			folded[lenOut++] = pair[1];
+		} else {
+			folded[lenOut++] = mapping[ch];
 		}
 	}
 
@@ -3154,15 +3149,14 @@ std::unique_ptr<CaseFolder> ScintillaWin::CaseFolderForEncoding() {
 		return std::make_unique<CaseFolderUnicode>();
 	}
 	if (pdoc->dbcsCodePage) {
-		return std::make_unique<CaseFolderDBCS>(cpDest);
+		return std::make_unique<CaseFolderDBCS>(cpDest, pdoc->GetDBCSByteMask());
 	}
 	std::unique_ptr<CaseFolderTable> pcf = std::make_unique<CaseFolderTable>();
 	// Only for single byte encodings
 	for (int i = highByteFirst; i <= highByteLast; i++) {
 		const char sCharacter[2] = {static_cast<char>(i), '\0'};
-		wchar_t wCharacter[safeFoldingSize];
-		const unsigned int lengthUTF16 = WideCharFromMultiByte(cpDest, std::string_view(sCharacter, 1),
-			wCharacter, std::size(wCharacter));
+		wchar_t wCharacter[2]{};
+		const unsigned int lengthUTF16 = ::MultiByteToWideChar(cpDest, MB_ERR_INVALID_CHARS, sCharacter, 1, wCharacter, _countof(wCharacter));
 		if (lengthUTF16 == 1) {
 			const char *caseFolded = CaseConvert(wCharacter[0], CaseConversion::fold);
 			if (caseFolded) {

@@ -285,11 +285,7 @@ INT_PTR CALLBACK AboutDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam
 		SetDlgItemText(hwnd, IDC_VERSION, VERSION_FILEVERSION_LONG);
 		SetDlgItemText(hwnd, IDC_BUILD_INFO, wch);
 
-		HFONT hFontTitle = AsPointer<HFONT>(SendDlgItemMessage(hwnd, IDC_VERSION, WM_GETFONT, 0, 0));
-		if (hFontTitle == nullptr) {
-			hFontTitle = GetStockFont(DEFAULT_GUI_FONT);
-		}
-
+		HFONT hFontTitle = GetWindowFont(hwnd);
 		LOGFONT lf;
 		GetObject(hFontTitle, sizeof(LOGFONT), &lf);
 		lf.lfWeight = FW_BOLD;
@@ -398,11 +394,10 @@ INT_PTR CALLBACK AboutDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam
 //
 // RunDlgProc()
 //
-extern int cxRunDlg;
 static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) noexcept {
 	switch (umsg) {
 	case WM_INITDIALOG: {
-		ResizeDlg_InitX(hwnd, cxRunDlg, IDC_RESIZEGRIP3);
+		ResizeDlg_InitX(hwnd, &positionRecord.cxRunDlg, IDC_RESIZEGRIP3);
 		MakeBitmapButton(hwnd, IDC_SEARCHEXE, g_exeInstance, IDB_OPEN_FOLDER16);
 
 		HWND hwndCtl = GetDlgItem(hwnd, IDC_COMMANDLINE);
@@ -415,43 +410,39 @@ static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM l
 	return TRUE;
 
 	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxRunDlg, nullptr);
 		DeleteBitmapButton(hwnd, IDC_SEARCHEXE);
 		return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, nullptr);
+		const int dx = GET_X_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP3, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, 0, SWP_NOSIZE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RUNDESC, dx, 0, SWP_NOMOVE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_RUNDESC, 0, 0, dx, 0);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_SEARCHEXE, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_COMMANDLINE, dx, 0, SWP_NOMOVE);
 		EndDeferWindowPos(hdwp);
-		InvalidateRect(GetDlgItem(hwnd, IDC_RUNDESC), nullptr, TRUE);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDC_SEARCHEXE: {
 			WCHAR szArgs[MAX_PATH];
 			WCHAR szArg2[MAX_PATH];
-			WCHAR szFile[MAX_PATH * 2];
+			WCHAR szFile[MAX_PATH];
 
 			GetDlgItemText(hwnd, IDC_COMMANDLINE, szArgs, COUNTOF(szArgs));
 			ExtractFirstArgument(szArgs, szFile, szArg2);
-			ExpandEnvironmentStringsEx(szFile, COUNTOF(szFile));
-			ExpandEnvironmentStringsEx(szArg2, COUNTOF(szArg2));
+			if (ExpandEnvironmentStringsEx(szFile, szArgs)) {
+				lstrcpy(szFile, szArgs);
+			}
+			if (ExpandEnvironmentStringsEx(szArg2, szArgs)) {
+				lstrcpy(szArg2, szArgs);
+			}
 
-			WCHAR szFilter[256];
+			auto &szFilter = szArgs;
 			GetString(IDS_FILTER_EXE, szFilter, COUNTOF(szFilter));
 			PrepareFilterStr(szFilter);
 
@@ -503,16 +494,19 @@ static INT_PTR CALLBACK RunDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM l
 			if (GetDlgItemText(hwnd, IDC_COMMANDLINE, arg1, MAX_PATH)) {
 				bool bQuickExit = false;
 				WCHAR arg2[MAX_PATH];
+				WCHAR wchDirectory[MAX_PATH];
 
 				ExtractFirstArgument(arg1, arg1, arg2);
-				ExpandEnvironmentStringsEx(arg2, COUNTOF(arg2));
+				if (ExpandEnvironmentStringsEx(arg2, wchDirectory)) {
+					lstrcpy(arg2, wchDirectory);
+				}
 
 				if (StrCaseEqual(arg1, L"Notepad4") || StrCaseEqual(arg1, L"Notepad4.exe")) {
 					GetModuleFileName(nullptr, arg1, COUNTOF(arg1));
 					bQuickExit = true;
 				}
 
-				WCHAR wchDirectory[MAX_PATH] = L"";
+				SetStrEmpty(wchDirectory);
 				if (StrNotEmpty(szCurFile)) {
 					lstrcpy(wchDirectory, szCurFile);
 					PathRemoveFileSpec(wchDirectory);
@@ -570,14 +564,11 @@ void RunDlg(HWND hwnd, LPCWSTR lpstrDefault) noexcept {
 extern WCHAR tchOpenWithDir[MAX_PATH];
 extern bool flagNoFadeHidden;
 
-extern int cxOpenWithDlg;
-extern int cyOpenWithDlg;
-
 static INT_PTR CALLBACK OpenWithDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) {
 	switch (umsg) {
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-		ResizeDlg_Init(hwnd, cxOpenWithDlg, cyOpenWithDlg, IDC_RESIZEGRIP3);
+		ResizeDlg_Init(hwnd, &positionRecord.cxOpenWithDlg, &positionRecord.cyOpenWithDlg, IDC_RESIZEGRIP3);
 
 		HWND hwndLV = GetDlgItem(hwnd, IDC_OPENWITHDIR);
 		InitWindowCommon(hwndLV);
@@ -604,32 +595,23 @@ static INT_PTR CALLBACK OpenWithDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPA
 	case WM_DESTROY:
 		DirList_Destroy(GetDlgItem(hwnd, IDC_OPENWITHDIR));
 		DeleteBitmapButton(hwnd, IDC_GETOPENWITHDIR);
-		ResizeDlg_Destroy(hwnd, &cxOpenWithDlg, &cyOpenWithDlg);
 		return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
-
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP3, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_OPENWITHDIR, dx, dy, SWP_NOMOVE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_GETOPENWITHDIR, 0, dy, SWP_NOSIZE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_OPENWITHDESCR, 0, dy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_OPENWITHDESCR, 0, dy, dx, 0);
 		EndDeferWindowPos(hdwp);
 
-		ResizeDlgCtl(hwnd, IDC_OPENWITHDESCR, dx, 0);
 		ListView_SetColumnWidth(GetDlgItem(hwnd, IDC_OPENWITHDIR), 0, LVSCW_AUTOSIZE_USEHEADER);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY: {
 		LPNMHDR pnmh = AsPointer<LPNMHDR>(lParam);
@@ -746,15 +728,11 @@ bool OpenWithDlg(HWND hwnd, LPCWSTR lpstrFile) {
 //
 extern WCHAR tchFavoritesDir[MAX_PATH];
 
-extern int cxFavoritesDlg;
-extern int cyFavoritesDlg;
-extern int cxAddFavoritesDlg;
-
 static INT_PTR CALLBACK FavoritesDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) {
 	switch (umsg) {
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-		ResizeDlg_Init(hwnd, cxFavoritesDlg, cyFavoritesDlg, IDC_RESIZEGRIP3);
+		ResizeDlg_Init(hwnd, &positionRecord.cxFavoritesDlg, &positionRecord.cyFavoritesDlg, IDC_RESIZEGRIP3);
 
 		HWND hwndLV = GetDlgItem(hwnd, IDC_FAVORITESDIR);
 		InitWindowCommon(hwndLV);
@@ -780,32 +758,23 @@ static INT_PTR CALLBACK FavoritesDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LP
 	case WM_DESTROY:
 		DirList_Destroy(GetDlgItem(hwnd, IDC_FAVORITESDIR));
 		DeleteBitmapButton(hwnd, IDC_GETFAVORITESDIR);
-		ResizeDlg_Destroy(hwnd, &cxFavoritesDlg, &cyFavoritesDlg);
 		return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
-
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP3, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_FAVORITESDIR, dx, dy, SWP_NOMOVE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_GETFAVORITESDIR, 0, dy, SWP_NOSIZE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_FAVORITESDESCR, 0, dy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_FAVORITESDESCR, 0, dy, dx, 0);
 		EndDeferWindowPos(hdwp);
 
-		ResizeDlgCtl(hwnd, IDC_FAVORITESDESCR, dx, 0);
 		ListView_SetColumnWidth(GetDlgItem(hwnd, IDC_FAVORITESDIR), 0, LVSCW_AUTOSIZE_USEHEADER);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY: {
 		LPNMHDR pnmh = AsPointer<LPNMHDR>(lParam);
@@ -900,7 +869,7 @@ static INT_PTR CALLBACK AddToFavDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPA
 	switch (umsg) {
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-		ResizeDlg_InitX(hwnd, cxAddFavoritesDlg, IDC_RESIZEGRIP);
+		ResizeDlg_InitX(hwnd, &positionRecord.cxAddFavoritesDlg, IDC_RESIZEGRIP);
 
 		HWND hwndCtl = GetDlgItem(hwnd, IDC_FAVORITESFILE);
 		Edit_LimitText(hwndCtl, MAX_PATH - 1);
@@ -910,28 +879,17 @@ static INT_PTR CALLBACK AddToFavDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPA
 	}
 	return TRUE;
 
-	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxAddFavoritesDlg, nullptr);
-		return FALSE;
-
 	case WM_SIZE: {
-		int dx;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, nullptr);
+		const int dx = GET_X_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(5);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, 0, SWP_NOSIZE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_FAVORITESDESCR, dx, 0, SWP_NOMOVE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_FAVORITESDESCR, 0, 0, dx, 0);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_FAVORITESFILE, dx, 0, SWP_NOMOVE);
 		EndDeferWindowPos(hdwp);
-		InvalidateRect(GetDlgItem(hwnd, IDC_FAVORITESDESCR), nullptr, TRUE);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
@@ -986,8 +944,6 @@ bool AddToFavDlg(HWND hwnd, LPCWSTR lpszName, LPCWSTR lpszTarget) {
 extern MRUList mruFile;
 extern bool bSaveRecentFiles;
 extern int iMaxRecentFiles;
-extern int cxFileMRUDlg;
-extern int cyFileMRUDlg;
 
 static DWORD WINAPI FileMRUIconThread(LPVOID lpParam) noexcept {
 	const BackgroundWorker * const worker = static_cast<const BackgroundWorker *>(lpParam);
@@ -1072,7 +1028,7 @@ static INT_PTR CALLBACK FileMRUDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPAR
 		SetProp(hwnd, L"it", worker);
 		worker->Init(hwndLV);
 
-		ResizeDlg_Init(hwnd, cxFileMRUDlg, cyFileMRUDlg, IDC_RESIZEGRIP);
+		ResizeDlg_Init(hwnd, &positionRecord.cxFileMRUDlg, &positionRecord.cyFileMRUDlg, IDC_RESIZEGRIP);
 
 		SHFILEINFO shfi;
 		ListView_SetImageList(hwndLV,
@@ -1113,17 +1069,12 @@ static INT_PTR CALLBACK FileMRUDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPAR
 		bSaveRecentFiles = IsButtonChecked(hwnd, IDC_SAVEMRU);
 		iMaxRecentFiles = GetDlgItemInt(hwnd, IDC_MRU_COUNT_VALUE, nullptr, FALSE);
 		iMaxRecentFiles = max(iMaxRecentFiles, MRU_MAXITEMS);
-
-		ResizeDlg_Destroy(hwnd, &cxFileMRUDlg, &cyFileMRUDlg);
 	}
 	return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
-
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
@@ -1137,10 +1088,6 @@ static INT_PTR CALLBACK FileMRUDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPAR
 		ListView_SetColumnWidth(GetDlgItem(hwnd, IDC_FILEMRU), 0, LVSCW_AUTOSIZE_USEHEADER);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY: {
 		LPNMHDR pnmhdr = AsPointer<LPNMHDR>(lParam);
@@ -1837,8 +1784,6 @@ bool TabSettingsDlg(HWND hwnd) noexcept {
 struct ENCODEDLG {
 	bool bRecodeOnly;
 	int  idEncoding;
-	int  cxDlg;
-	int  cyDlg;
 	UINT uidLabel;
 };
 
@@ -1929,7 +1874,7 @@ static INT_PTR CALLBACK SelectEncodingDlgProc(HWND hwnd, UINT umsg, WPARAM wPara
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
 		const ENCODEDLG * const pdd = AsPointer<const ENCODEDLG*>(lParam);
-		ResizeDlg_Init(hwnd, pdd->cxDlg, pdd->cyDlg, IDC_RESIZEGRIP);
+		ResizeDlg_Init(hwnd, &positionRecord.cxEncodingDlg, &positionRecord.cyEncodingDlg, IDC_RESIZEGRIP);
 
 		WCHAR wch[256];
 		GetString(pdd->uidLabel, wch, COUNTOF(wch));
@@ -1966,19 +1911,14 @@ static INT_PTR CALLBACK SelectEncodingDlgProc(HWND hwnd, UINT umsg, WPARAM wPara
 	return TRUE;
 
 	case WM_DESTROY: {
-		ENCODEDLG * pdd = AsPointer<ENCODEDLG *>(GetWindowLongPtr(hwnd, DWLP_USER));
-		ResizeDlg_Destroy(hwnd, &pdd->cxDlg, &pdd->cyDlg);
 		HIMAGELIST himl = TreeView_GetImageList(GetDlgItem(hwnd, IDC_ENCODINGLIST), TVSIL_NORMAL);
 		ImageList_Destroy(himl);
 	}
 	return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
-
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(4);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
@@ -1987,10 +1927,6 @@ static INT_PTR CALLBACK SelectEncodingDlgProc(HWND hwnd, UINT umsg, WPARAM wPara
 		EndDeferWindowPos(hdwp);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY: {
 		LPNMHDR lpnmh = AsPointer<LPNMHDR>(lParam);
@@ -2045,22 +1981,14 @@ static INT_PTR CALLBACK SelectEncodingDlgProc(HWND hwnd, UINT umsg, WPARAM wPara
 //
 // SelectEncodingDlg()
 //
-extern int cxEncodingDlg;
-extern int cyEncodingDlg;
-
 bool SelectEncodingDlg(HWND hwnd, int *pidREncoding, UINT uidLabel) noexcept {
 	ENCODEDLG dd;
 
 	dd.bRecodeOnly = (uidLabel == IDS_SELRECT_RELOAD_ENCODING);
 	dd.idEncoding = *pidREncoding;
-	dd.cxDlg = cxEncodingDlg;
-	dd.cyDlg = cyEncodingDlg;
 	dd.uidLabel = uidLabel;
 
 	const INT_PTR iResult = ThemedDialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_SELECT_ENCODING), hwnd, SelectEncodingDlgProc, AsInteger<LPARAM>(&dd));
-
-	cxEncodingDlg = dd.cxDlg;
-	cyEncodingDlg = dd.cyDlg;
 
 	if (iResult == IDOK) {
 		*pidREncoding = dd.idEncoding;
@@ -2614,7 +2542,8 @@ struct INFOBOX {
 	LPWSTR lpstrMessage;
 	LPCWSTR lpstrSetting;
 	HICON hIcon;
-	bool   bDisableCheckBox;
+	UINT uType;
+	bool bDisableCheckBox;
 };
 
 enum SuppressMmessage {
@@ -2630,11 +2559,25 @@ INT_PTR CALLBACK InfoBoxDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lPar
 		const INFOBOX * const lpib = AsPointer<const INFOBOX *>(lParam);
 
 		SendDlgItemMessage(hwnd, IDC_INFOBOXICON, STM_SETICON, AsInteger<WPARAM>(lpib->hIcon), 0);
+		HWND hwndOK = GetDlgItem(hwnd, IDOK);
+		HWND hwndCancel = GetDlgItem(hwnd, IDCANCEL);
+		if (lpib->uType != MB_YESNO) {
+			if (lpib->uType == MB_OK) {
+				RECT rc;
+				GetWindowRect(hwndCancel, &rc);
+				DestroyWindow(hwndCancel);
+				MapWindowPoints(nullptr, hwnd, reinterpret_cast<LPPOINT>(&rc), 2);
+				SetWindowPos(hwndOK, nullptr, rc.left, rc.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
+			}
+			hwndOK = GetDlgItem(hwnd, IDYES);
+			hwndCancel = GetDlgItem(hwnd, IDNO);
+		}
+		DestroyWindow(hwndOK);
+		DestroyWindow(hwndCancel);
 		SetDlgItemText(hwnd, IDC_INFOBOXTEXT, lpib->lpstrMessage);
 		if (lpib->bDisableCheckBox) {
 			EnableWindow(GetDlgItem(hwnd, IDC_INFOBOXCHECK), FALSE);
 		}
-		NP2HeapFree(lpib->lpstrMessage);
 		CenterDlgInParent(hwnd);
 	}
 	return TRUE;
@@ -2686,37 +2629,71 @@ INT_PTR InfoBox(UINT uType, LPCWSTR lpstrSetting, UINT uidMessage, ...) noexcept
 	WCHAR wchFormat[512];
 	GetString(uidMessage, wchFormat, COUNTOF(wchFormat));
 
-	INFOBOX ib;
-	ib.lpstrMessage = static_cast<LPWSTR>(NP2HeapAlloc(1024 * sizeof(WCHAR)));
-
+	WCHAR lpstrMessage[1024];
 	va_list va;
 	va_start(va, uidMessage);
-	wvsprintf(ib.lpstrMessage, wchFormat, va);
+	// UINT len = wvsprintf(lpstrMessage, wchFormat, va);
+	wvsprintf(lpstrMessage, wchFormat, va);
 	va_end(va);
 
+	INFOBOX ib;
+	ib.lpstrMessage = lpstrMessage;
 	ib.lpstrSetting = lpstrSetting;
+	ib.uType = uType;
 
-#if 0//_WIN32_WINNT >= _WIN32_WINNT_VISTA
-	SHSTOCKICONINFO sii;
-	sii.cbSize = sizeof(SHSTOCKICONINFO);
-	sii.hIcon = nullptr;
-	const SHSTOCKICONID siid = (icon == MB_ICONINFORMATION) ? SIID_INFO : ((icon == MB_ICONQUESTION) ? SIID_HELP : SIID_WARNING);
-	SHGetStockIconInfo(siid, SHGSI_ICON, &sii); //! not implemented in Wine
-	ib.hIcon = sii.hIcon;
-#else
+	HICON hIcon = nullptr;
 	LPCWSTR lpszIcon = (icon == MB_ICONINFORMATION) ? IDI_INFORMATION : ((icon == MB_ICONQUESTION) ? IDI_QUESTION : IDI_EXCLAMATION);
-	ib.hIcon = LoadIcon(nullptr, lpszIcon);
-#endif
-
-	ib.bDisableCheckBox = StrIsEmpty(szIniFile) || StrIsEmpty(lpstrSetting) || iMode == SuppressMmessage_Never;
-
-	const WORD idDlg = (uType == MB_YESNO) ? IDD_INFOBOX_YESNO : ((uType == MB_OKCANCEL) ? IDD_INFOBOX_OKCANCEL : IDD_INFOBOX_OK);
 	HWND hwnd = GetMsgBoxParent();
+	const UINT dpi = GetWindowDPI(hwnd);
+	const int size = SystemMetricsForDpi(SM_CXICON, dpi);
+	LoadIconWithScaleDown(nullptr, lpszIcon, size, size, &hIcon);
+	ib.hIcon = hIcon ? hIcon : LoadIcon(nullptr, lpszIcon); // old standard icon
+
+	ib.bDisableCheckBox = StrIsEmpty(lpstrSetting) || iMode == SuppressMmessage_Never;
 	MessageBeep(MB_ICONEXCLAMATION);
-	const INT_PTR result = ThemedDialogBoxParam(g_hInstance, MAKEINTRESOURCE(idDlg), hwnd, InfoBoxDlgProc, AsInteger<LPARAM>(&ib));
-#if 0//_WIN32_WINNT >= _WIN32_WINNT_VISTA
-	DestroyIcon(sii.hIcon);
-#endif
+	const INT_PTR result = ThemedDialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_INFOBOX), hwnd, InfoBoxDlgProc, AsInteger<LPARAM>(&ib));
+	DestroyIcon(hIcon);
+
+#if 0// task dialog
+	// pad message to multiline to make the dialog looks better
+	lpstrMessage[len++] = '\r';
+	lpstrMessage[len++] = '\n';
+	lpstrMessage[len++] = '\0';
+
+	TASKDIALOGCONFIG config {};
+	config.cbSize = sizeof(TASKDIALOGCONFIG);
+	config.hwndParent = GetMsgBoxParent();
+	config.hInstance = g_hInstance;
+	config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+	config.cxWidth = 200; // in dialog unit
+	config.pszWindowTitle = MAKEINTRESOURCE(IDS_APPTITLE);
+	config.pszContent = lpstrMessage;
+	// checkbox and verification text seems not center aligned
+	// config.pszVerificationText = MAKEINTRESOURCE(IDS_DONT_SHOW_AGAIN);
+	config.pszVerificationText = L"&Don't show this message again.";
+	config.dwCommonButtons = (uType == MB_YESNO) ? (TDCBF_YES_BUTTON | TDCBF_NO_BUTTON) : ((uType == MB_OKCANCEL) ? (TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON) : TDCBF_OK_BUTTON);
+	HICON hMainIcon = nullptr;
+	if (icon != MB_ICONQUESTION) {
+		config.pszMainIcon = (icon == MB_ICONEXCLAMATION) ? TD_WARNING_ICON : TD_INFORMATION_ICON;
+	} else {
+		config.dwFlags |= TDF_USE_HICON_MAIN;
+		const UINT dpi = GetWindowDPI(config.hwndParent);
+		const int size = SystemMetricsForDpi(SM_CXICON, dpi);
+		LoadIconWithScaleDown(nullptr, IDI_QUESTION, size, size, &hMainIcon);
+		config.hMainIcon = hMainIcon ? hMainIcon : LoadIcon(nullptr, IDI_QUESTION); // old standard icon
+	}
+
+	int result = 0;
+	BOOL checked = FALSE;
+	const bool bDisableCheckBox = StrIsEmpty(lpstrSetting) || iMode == SuppressMmessage_Never;
+	MessageBeep(MB_ICONEXCLAMATION);
+	TaskDialogIndirect(&config, &result, nullptr, (bDisableCheckBox ? nullptr : &checked));
+	DestroyIcon(hMainIcon);
+	if (checked) {
+		IniSetBool(INI_SECTION_NAME_SUPPRESSED_MESSAGES, lpstrSetting, true);
+	}
+#endif // task dialog
+
 	return result;
 }
 

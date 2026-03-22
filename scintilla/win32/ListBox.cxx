@@ -129,9 +129,9 @@ constexpr int ListBoxXFakeFrameSize = 4;
 
 class ListBoxX final : public ListBox {
 	int lineHeight = commonLineHeight;
+	Technology technology = Technology::Default;
 	HFONT fontCopy {};
 	std::shared_ptr<FontWin> fontWin;
-	Technology technology = Technology::Default;
 	RGBAImageSet images;
 	LineToItem lti;
 	HWND lb {};
@@ -151,12 +151,13 @@ class ListBoxX final : public ListBox {
 	const char *widestItem = nullptr;
 #endif
 	unsigned int maxCharWidth = 1;
+	DWORD frameStyle = WS_THICKFRAME;
 	WPARAM resizeHit = 0;
+	double yAscent = 0;
 	PRectangle rcPreSize;
 	Point dragOffset;
 	Point location;	// Caret location at which the list is opened
 	MouseWheelDelta wheelDelta;
-	DWORD frameStyle = WS_THICKFRAME;
 
 	LBGraphics graphics;
 
@@ -177,7 +178,7 @@ class ListBoxX final : public ListBox {
 	LRESULT NcHitTest(WPARAM, LPARAM) const noexcept;
 	void CentreItem(int n) noexcept;
 	void AllocateBitMap();
-	static LRESULT CALLBACK ControlWndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+	static LRESULT CALLBACK ListProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 
 	static constexpr POINT ItemInset {0, 0};	// Padding around whole item
 	static constexpr POINT TextInset {2, 0};	// Padding around text
@@ -197,7 +198,7 @@ public:
 	}
 	void SetFont(std::shared_ptr<Font> font) noexcept override;
 	void SCICALL Create(Window &parent_, int ctrlID_, Point location_, int lineHeight_, int codePage_, Technology technology_) noexcept override;
-	void SetAverageCharWidth(int width) noexcept override;
+	void SetAverageCharWidth(int width, double ascent) noexcept override;
 	void SetVisibleRows(int rows) noexcept override;
 	int GetVisibleRows() const noexcept override;
 	PRectangle GetDesiredRect() override;
@@ -266,8 +267,9 @@ void ListBoxX::SetFont(std::shared_ptr<Font> font) noexcept {
 	}
 }
 
-void ListBoxX::SetAverageCharWidth(int width) noexcept {
+void ListBoxX::SetAverageCharWidth(int width, double ascent) noexcept {
 	aveCharWidth = width;
+	yAscent = ascent;
 }
 
 void ListBoxX::SetVisibleRows(int rows) noexcept {
@@ -316,10 +318,9 @@ PRectangle ListBoxX::GetDesiredRect() {
 #endif
 
 	maxCharWidth = static_cast<int>(std::ceil(surfaceItem->WidthText(fontWin.get(), "W")));
-	const int averageCharWidth = static_cast<int>(surfaceItem->AverageCharWidth(fontWin.get()));
 
 	width = std::max(width, textSize);
-	width = std::max<int>(width, (maxItemCharacters + 1) * averageCharWidth);
+	width = std::max<int>(width, (maxItemCharacters + 1) * aveCharWidth);
 
 	rcDesired.right = rcDesired.left + TextOffset() + width + (TextInset.x * 2);
 	if (Length() > rows) {
@@ -441,8 +442,7 @@ void ListBoxX::Draw(const DRAWITEMSTRUCT *pDrawItem) {
 
 	const PRectangle rcText = rcBox.Inset(Point(TextInset.x, TextInset.y));
 
-	const double ascent = graphics.pixmapLine->Ascent(fontWin.get());
-	graphics.pixmapLine->DrawTextClipped(rcText, fontWin.get(), rcText.top + ascent, std::string_view(text, len), colourFore, colourBack);
+	graphics.pixmapLine->DrawTextClipped(rcText, fontWin.get(), rcText.top + yAscent, std::string_view(text, len), colourFore, colourBack);
 
 	// Draw the image, if any
 	const RGBAImage *pimage = images.Get(pixId);
@@ -821,9 +821,9 @@ void ListBoxX::AllocateBitMap() {
 	graphics.pixmapLine->Init(graphics.bm.DC(), GetID());
 }
 
-LRESULT CALLBACK ListBoxX::ControlWndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/) {
+LRESULT CALLBACK ListBoxX::ListProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	try {
-		ListBoxX * const lbx = PointerFromWindow<ListBoxX *>(::GetParent(hWnd));
+		ListBoxX * const lbx = AsPointer<ListBoxX *>(dwRefData);
 		switch (iMessage) {
 		case WM_ERASEBKGND:
 			return TRUE;
@@ -838,9 +838,7 @@ LRESULT CALLBACK ListBoxX::ControlWndProc(HWND hWnd, UINT iMessage, WPARAM wPara
 			const LRESULT lResult = ::SendMessage(hWnd, LB_ITEMFROMPOINT, 0, lParam);
 			if (HIWORD(lResult) == 0) {
 				ListBox_SetCurSel(hWnd, LOWORD(lResult));
-				if (lbx) {
-					lbx->OnSelChange();
-				}
+				lbx->OnSelChange();
 			}
 		}
 		return 0;
@@ -848,19 +846,16 @@ LRESULT CALLBACK ListBoxX::ControlWndProc(HWND hWnd, UINT iMessage, WPARAM wPara
 		case WM_LBUTTONUP:
 			return 0;
 
-		case WM_LBUTTONDBLCLK: {
-			if (lbx) {
-				lbx->OnDoubleClick();
-			}
-		}
-		return 0;
+		case WM_LBUTTONDBLCLK:
+			lbx->OnDoubleClick();
+			return 0;
 
 		case WM_MBUTTONDOWN:
 			// disable the scroll wheel button click action
 			return 0;
 
 		case WM_NCDESTROY:
-			RemoveWindowSubclass(hWnd, ControlWndProc, uIdSubclass);
+			RemoveWindowSubclass(hWnd, ListProc, uIdSubclass);
 			break;
 		}
 	} catch (...) {
@@ -882,7 +877,7 @@ LRESULT ListBoxX::WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam
 			AsPointer<HMENU>(static_cast<ptrdiff_t>(ctrlID)),
 			hinstanceParent,
 			nullptr);
-		::SetWindowSubclass(lb, ControlWndProc, 0, 0);
+		::SetWindowSubclass(lb, ListProc, 0, AsInteger<DWORD_PTR>(this));
 	}
 	break;
 

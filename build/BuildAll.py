@@ -137,6 +137,8 @@ def prepare_build_environment():
 		'../doc/Notepad4 DarkTheme.ini',
 		'../matepath/doc/matepath.ini']:
 		target = os.path.join(zipDir, os.path.basename(path))
+		if target.endswith('.ini'):
+			target = target + '-default'
 		if not os.path.exists(target):
 			src = os.path.join(buildFolder, path)
 			shutil.copyfile(src, target)
@@ -253,7 +255,7 @@ def build_all_release_artifact():
 	endTime = time.perf_counter()
 	print('total build time:', format_duration(endTime - startTime))
 
-# https://cli.github.com/
+# https://cli.github.com/manual/
 # gh auth login
 # gh release list -L 2
 # gh release upload <tag> <files>

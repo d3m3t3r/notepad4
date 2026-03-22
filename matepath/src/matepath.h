@@ -128,6 +128,21 @@ enum TargetApplicationMode {
 #define MAX_INI_SECTION_SIZE_FILTERS			(4 * 1024)
 #define MAX_INI_SECTION_SIZE_TARGET_APPLICATION	(4 * 1024)
 
+struct WindowPositionRecord {
+	int	cxRunDlg;
+	int	cxGotoDlg;
+	int	cxFileFilterDlg;
+	int	cxRenameFileDlg;
+	int	cxNewDirectoryDlg;
+	int	cxOpenWithDlg;
+	int	cyOpenWithDlg;
+	int	cxCopyMoveDlg;
+	int	cxTargetApplicationDlg;
+	int	cxFindWindowDlg;
+};
+
+extern WindowPositionRecord positionRecord;
+
 //==== Function Declarations ==================================================
 BOOL InitApplication(HINSTANCE hInstance) noexcept;
 void InitInstance(HINSTANCE hInstance, int nCmdShow);
@@ -146,10 +161,7 @@ void ParseCommandLine() noexcept;
 void LoadFlags() noexcept;
 void LoadLaunchSetings() noexcept;
 
-bool CheckIniFile(LPWSTR lpszFile, LPCWSTR lpszModule) noexcept;
-bool CheckIniFileRedirect(LPWSTR lpszFile, LPCWSTR lpszModule) noexcept;
-bool FindIniFile() noexcept;
-bool TestIniFile() noexcept;
+void FindIniFile() noexcept;
 bool CreateIniFile(LPCWSTR lpszIniFile) noexcept;
 
 bool DisplayPath(LPCWSTR lpPath, UINT uIdError);

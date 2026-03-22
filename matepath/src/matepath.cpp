@@ -76,8 +76,8 @@ static UINT uTrayIconDPI = 0;
 static HANDLE hChangeHandle = nullptr;
 HistoryList	mHistory;
 
-WCHAR	szIniFile[MAX_PATH] = L"";
-WCHAR	szIniFile2[MAX_PATH] = L"";
+WCHAR	szIniFile[MAX_PATH];
+WCHAR szExeRealPath[MAX_PATH];
 bool	bSaveSettings;
 static bool bHasQuickview = false;
 WCHAR	szQuickview[MAX_PATH];
@@ -108,16 +108,6 @@ static bool bShowToolbar;
 static int iAutoScaleToolbar;
 static bool bShowStatusbar;
 static bool bShowDriveBox;
-int		cxRunDlg;
-int		cxGotoDlg;
-int		cxFileFilterDlg;
-int		cxRenameFileDlg;
-int		cxNewDirectoryDlg;
-int		cxOpenWithDlg;
-int		cyOpenWithDlg;
-int		cxCopyMoveDlg;
-int		cxTargetApplicationDlg;
-int		cxFindWindowDlg;
 
 WCHAR		tchFilter[DL_FILTER_BUFSIZE];
 bool		bNegFilter;
@@ -139,6 +129,7 @@ static WININFO wi;
 static int cyReBar;
 static int cyReBarFrame;
 static int cyDriveBoxFrame;
+WindowPositionRecord positionRecord;
 
 int		nIdFocus = IDC_DIRLIST;
 
@@ -290,12 +281,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 #endif
 
 	g_hDefaultHeap = GetProcessHeap();
+	GetProgramRealPath(szExeRealPath, COUNTOF(szExeRealPath));
 	SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 	// Command Line, Ini File and Flags
 	ParseCommandLine();
 	FindIniFile();
-	TestIniFile();
-	CreateIniFile(szIniFile);
 	LoadFlags();
 
 	// Try to activate another window
@@ -1186,9 +1176,6 @@ void MsgInitMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) {
 
 	CheckCmd(hmenu, IDM_SORT_REVERSE, fSortRev);
 	CheckCmd(hmenu, IDM_VIEW_ALWAYSONTOP, bAlwaysOnTop);
-
-	i = StrNotEmpty(szIniFile) || StrNotEmpty(szIniFile2);
-	EnableCmd(hmenu, IDM_VIEW_SAVESETTINGS, i);
 }
 
 //=============================================================================
@@ -1899,10 +1886,8 @@ LRESULT MsgCommand(HWND hwnd, WPARAM wParam, LPARAM lParam) {
 		break;
 
 	case ACC_SELECTINIFILE:
-		if (StrNotEmpty(szIniFile)) {
-			CreateIniFile(szIniFile);
-			DisplayPath(szIniFile, IDS_ERR_INIOPEN);
-		}
+		CreateIniFile(szIniFile);
+		DisplayPath(szIniFile, IDS_ERR_INIOPEN);
 		break;
 
 	case IDT_HISTORY_BACK:
@@ -2493,32 +2478,24 @@ void LoadSettings() noexcept {
 
 	LPCWSTR strValue = section.GetValue(L"OpenWithDir");
 	if (StrIsEmpty(strValue)) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		if (S_OK == SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
 			lstrcpy(tchOpenWithDir, pszPath);
 			CoTaskMemFree(pszPath);
 		}
-#else
-		SHGetFolderPath(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, tchOpenWithDir);
-#endif
 	} else {
-		PathAbsoluteFromApp(strValue, tchOpenWithDir, true);
+		PathAbsoluteFromApp(strValue, tchOpenWithDir);
 	}
 
 	strValue = section.GetValue(L"Favorites");
 	if (StrIsEmpty(strValue)) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		if (S_OK == SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
 			lstrcpy(tchFavoritesDir, pszPath);
 			CoTaskMemFree(pszPath);
 		}
-#else
-		SHGetFolderPath(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, tchFavoritesDir);
-#endif
 	} else {
-		PathAbsoluteFromApp(strValue, tchFavoritesDir, true);
+		PathAbsoluteFromApp(strValue, tchFavoritesDir);
 	}
 
 	strValue = section.GetValue(L"Quikview.exe");
@@ -2527,7 +2504,7 @@ void LoadSettings() noexcept {
 		PathAddBackslash(szQuickview);
 		lstrcat(szQuickview, L"Viewers\\Quikview.exe");
 	} else {
-		PathAbsoluteFromApp(strValue, szQuickview, true);
+		PathAbsoluteFromApp(strValue, szQuickview);
 	}
 
 	bHasQuickview = PathIsFile(szQuickview);
@@ -2625,16 +2602,17 @@ void LoadSettings() noexcept {
 			wi.cy	= section.GetInt(L"WindowSizeY", CW_USEDEFAULT);
 		}
 
-		cxRunDlg = section.GetInt(L"RunDlgSizeX", 0);
-		cxGotoDlg = section.GetInt(L"GotoDlgSizeX", 0);
-		cxFileFilterDlg = section.GetInt(L"FileFilterDlgX", 0);
-		cxRenameFileDlg = section.GetInt(L"RenameFileDlgX", 0);
-		cxNewDirectoryDlg = section.GetInt(L"NewDirectoryDlgX", 0);
-		cxOpenWithDlg = section.GetInt(L"OpenWithDlgSizeX", 0);
-		cyOpenWithDlg = section.GetInt(L"OpenWithDlgSizeY", 0);
-		cxCopyMoveDlg = section.GetInt(L"CopyMoveDlgSizeX", 0);
-		cxTargetApplicationDlg = section.GetInt(L"TargetApplicationDlgSizeX", 0);
-		cxFindWindowDlg = section.GetInt(L"FindWindowDlgSizeX", 0);
+		auto &record = positionRecord;
+		record.cxRunDlg = section.GetInt(L"RunDlgSizeX", 0);
+		record.cxGotoDlg = section.GetInt(L"GotoDlgSizeX", 0);
+		record.cxFileFilterDlg = section.GetInt(L"FileFilterDlgX", 0);
+		record.cxRenameFileDlg = section.GetInt(L"RenameFileDlgX", 0);
+		record.cxNewDirectoryDlg = section.GetInt(L"NewDirectoryDlgX", 0);
+		record.cxOpenWithDlg = section.GetInt(L"OpenWithDlgSizeX", 0);
+		record.cyOpenWithDlg = section.GetInt(L"OpenWithDlgSizeY", 0);
+		record.cxCopyMoveDlg = section.GetInt(L"CopyMoveDlgSizeX", 0);
+		record.cxTargetApplicationDlg = section.GetInt(L"TargetApplicationDlgSizeX", 0);
+		record.cxFindWindowDlg = section.GetInt(L"FindWindowDlgSizeX", 0);
 	}
 
 	section.Free();
@@ -2661,21 +2639,7 @@ void LoadSettings() noexcept {
 
 void SaveSettingsNow() noexcept {
 	bool bCreateFailure = false;
-
-	if (StrIsEmpty(szIniFile)) {
-		if (StrNotEmpty(szIniFile2)) {
-			if (CreateIniFile(szIniFile2)) {
-				lstrcpy(szIniFile, szIniFile2);
-				StrCpyEx(szIniFile2, L"");
-			} else {
-				bCreateFailure = true;
-			}
-		} else {
-			return;
-		}
-	}
-
-	if (!bCreateFailure) {
+	{
 		if (WritePrivateProfileString(INI_SECTION_NAME_SETTINGS, L"WriteTest", L"ok", szIniFile)) {
 			BeginWaitCursor();
 			if (CreateIniFile(szIniFile)) {
@@ -2726,12 +2690,12 @@ void SaveSettings(bool bSaveSettingsNow) noexcept {
 	if (iStartupDir == StartupDirectory_MRU) {
 		section.SetString(L"MRUDirectory", szCurDir);
 	}
-	PathRelativeToApp(tchFavoritesDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, true, flagPortableMyDocs);
+	PathRelativeToApp(tchFavoritesDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, flagPortableMyDocs);
 	section.SetString(L"Favorites", wchTmp);
-	PathRelativeToApp(szQuickview, wchTmp, FILE_ATTRIBUTE_DIRECTORY, true, flagPortableMyDocs);
+	PathRelativeToApp(szQuickview, wchTmp, FILE_ATTRIBUTE_DIRECTORY, flagPortableMyDocs);
 	section.SetString(L"Quikview.exe", wchTmp);
 	section.SetStringEx(L"QuikviewParams", szQuickviewParams, L"");
-	PathRelativeToApp(tchOpenWithDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, true, flagPortableMyDocs);
+	PathRelativeToApp(tchOpenWithDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, flagPortableMyDocs);
 	section.SetString(L"OpenWithDir", wchTmp);
 	section.SetInt(L"WindowPosX", wi.x);
 	section.SetInt(L"WindowPosY", wi.y);
@@ -2800,32 +2764,23 @@ void SaveWindowPosition(WCHAR *pIniSectionBuf) noexcept {
 	section.SetInt(L"WindowSizeX", wi.cx);
 	section.SetInt(L"WindowSizeY", wi.cy);
 
-	section.SetIntEx(L"RunDlgSizeX", cxRunDlg, 0);
-	section.SetIntEx(L"GotoDlgSizeX", cxGotoDlg, 0);
-	section.SetIntEx(L"FileFilterDlgX", cxFileFilterDlg, 0);
-	section.SetIntEx(L"RenameFileDlgX", cxRenameFileDlg, 0);
-	section.SetIntEx(L"NewDirectoryDlgX", cxNewDirectoryDlg, 0);
-	section.SetIntEx(L"OpenWithDlgSizeX", cxOpenWithDlg, 0);
-	section.SetIntEx(L"OpenWithDlgSizeY", cyOpenWithDlg, 0);
-	section.SetIntEx(L"CopyMoveDlgSizeX", cxCopyMoveDlg, 0);
-	section.SetIntEx(L"TargetApplicationDlgSizeX", cxTargetApplicationDlg, 0);
-	section.SetIntEx(L"FindWindowDlgSizeX", cxFindWindowDlg, 0);
+	const auto &record = positionRecord;
+	section.SetIntEx(L"RunDlgSizeX", record.cxRunDlg, 0);
+	section.SetIntEx(L"GotoDlgSizeX", record.cxGotoDlg, 0);
+	section.SetIntEx(L"FileFilterDlgX", record.cxFileFilterDlg, 0);
+	section.SetIntEx(L"RenameFileDlgX", record.cxRenameFileDlg, 0);
+	section.SetIntEx(L"NewDirectoryDlgX", record.cxNewDirectoryDlg, 0);
+	section.SetIntEx(L"OpenWithDlgSizeX", record.cxOpenWithDlg, 0);
+	section.SetIntEx(L"OpenWithDlgSizeY", record.cyOpenWithDlg, 0);
+	section.SetIntEx(L"CopyMoveDlgSizeX", record.cxCopyMoveDlg, 0);
+	section.SetIntEx(L"TargetApplicationDlgSizeX", record.cxTargetApplicationDlg, 0);
+	section.SetIntEx(L"FindWindowDlgSizeX", record.cxFindWindowDlg, 0);
 
 	SaveIniSection(sectionName, pIniSectionBuf);
 }
 
 void ClearWindowPositionHistory() noexcept {
-	cxRunDlg = 0;
-	cxGotoDlg = 0;
-	cxFileFilterDlg = 0;
-	cxRenameFileDlg = 0;
-	cxNewDirectoryDlg = 0;
-	cxOpenWithDlg = 0;
-	cyOpenWithDlg = 0;
-	cxCopyMoveDlg = 0;
-	cxTargetApplicationDlg = 0;
-	cxFindWindowDlg = 0;
-
+	memset(&positionRecord, 0, sizeof(positionRecord));
 	IniDeleteAllSection(INI_SECTION_NAME_WINDOW_POSITION);
 }
 
@@ -2834,11 +2789,15 @@ void ClearWindowPositionHistory() noexcept {
 //  ParseCommandLine()
 //
 //
+namespace {
+
 enum CommandParseState {
 	CommandParseState_None,
 	CommandParseState_Consumed,
 	CommandParseState_Argument,
 };
+
+}
 
 CommandParseState ParseCommandLineOption(LPWSTR lp1, LPWSTR lp2) noexcept {
 	LPWSTR opt = lp1 + 1;
@@ -2855,16 +2814,6 @@ CommandParseState ParseCommandLineOption(LPWSTR lp1, LPWSTR lp2) noexcept {
 
 	if (opt[1] == L'\0') {
 		switch (ch) {
-		case L'F':
-			state = CommandParseState_Argument;
-			if (ExtractFirstArgument(lp2, lp1, lp2)) {
-				lstrcpyn(szIniFile, lp1, COUNTOF(szIniFile));
-				TrimString(szIniFile);
-				PathUnquoteSpaces(szIniFile);
-				state = CommandParseState_Consumed;
-			}
-			break;
-
 		case L'G':
 			flagGotoFavorites = true;
 			state = CommandParseState_Consumed;
@@ -2921,13 +2870,6 @@ CommandParseState ParseCommandLineOption(LPWSTR lp1, LPWSTR lp2) noexcept {
 	} else if (opt[2] == L'\0') {
 		const int chNext = ToUpperA(opt[1]);
 		switch (ch) {
-		case L'F':
-			if (chNext == L'0' || chNext == L'O') {
-				StrCpyEx(szIniFile, L"*?");
-				state = CommandParseState_Consumed;
-			}
-			break;
-
 		case L'P':
 			switch (chNext) {
 			case L'D':
@@ -3059,171 +3001,56 @@ void LoadFlags() noexcept {
 //  FindIniFile()
 //
 //
-bool CheckIniFile(LPWSTR lpszFile, LPCWSTR lpszModule) noexcept {
-	WCHAR tchFileExpanded[MAX_PATH];
-	ExpandEnvironmentStrings(lpszFile, tchFileExpanded, COUNTOF(tchFileExpanded));
-
-	if (PathIsRelative(tchFileExpanded)) {
-		WCHAR tchBuild[MAX_PATH];
-		// program directory
-		lstrcpy(tchBuild, lpszModule);
-		lstrcpy(PathFindFileName(tchBuild), tchFileExpanded);
-		if (PathIsFile(tchBuild)) {
-			lstrcpy(lpszFile, tchBuild);
-			return true;
-		}
-
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
-		const KNOWNFOLDERID * const rfidList[] = {
-			&FOLDERID_LocalAppData,
-			&FOLDERID_RoamingAppData,
-			&FOLDERID_Profile,
-		};
-		for (UINT i = 0; i < COUNTOF(rfidList); i++) {
-			LPWSTR pszPath = nullptr;
-			if (S_OK == SHGetKnownFolderPath(*rfidList[i], KF_FLAG_DEFAULT, nullptr, &pszPath)) {
-				PathCombine(tchBuild, pszPath, WC_NOTEPAD4);
-				CoTaskMemFree(pszPath);
-				PathAppend(tchBuild, tchFileExpanded);
-				if (PathIsFile(tchBuild)) {
-					lstrcpy(lpszFile, tchBuild);
-					return true;
-				}
-			}
-		}
-#else
-		const int csidlList[] = {
-			// %LOCALAPPDATA%
-			// C:\Users\<username>\AppData\Local
-			// C:\Documents and Settings\<username>\Local Settings\Application Data
-			CSIDL_LOCAL_APPDATA,
-			// %APPDATA%
-			// C:\Users\<username>\AppData\Roaming
-			// C:\Documents and Settings\<username>\Application Data
-			CSIDL_APPDATA,
-			// Home
-			// C:\Users\<username>
-			CSIDL_PROFILE,
-		};
-		for (UINT i = 0; i < COUNTOF(csidlList); i++) {
-			if (S_OK == SHGetFolderPath(nullptr, csidlList[i], nullptr, SHGFP_TYPE_CURRENT, tchBuild)) {
-				PathAppend(tchBuild, WC_NOTEPAD4);
-				PathAppend(tchBuild, tchFileExpanded);
-				if (PathIsFile(tchBuild)) {
-					lstrcpy(lpszFile, tchBuild);
-					return true;
-				}
-			}
-		}
-#endif
-	} else if (PathIsFile(tchFileExpanded)) {
-		lstrcpy(lpszFile, tchFileExpanded);
-		return true;
-	}
-
-	return false;
-}
-
-bool CheckIniFileRedirect(LPWSTR lpszFile, LPCWSTR lpszModule) noexcept {
-	WCHAR tch[MAX_PATH];
-	if (GetPrivateProfileString(INI_SECTION_NAME_MATEPATH, L"matepath.ini", L"", tch, COUNTOF(tch), lpszFile)) {
-		if (CheckIniFile(tch, lpszModule)) {
-			lstrcpy(lpszFile, tch);
-		} else {
-			WCHAR tchFileExpanded[MAX_PATH];
-			ExpandEnvironmentStrings(tch, tchFileExpanded, COUNTOF(tchFileExpanded));
-			if (PathIsRelative(tchFileExpanded)) {
-				lstrcpy(lpszFile, lpszModule);
-				lstrcpy(PathFindFileName(lpszFile), tchFileExpanded);
-			} else {
-				lstrcpy(lpszFile, tchFileExpanded);
-			}
-		}
-		return true;
-	}
-	return false;
-}
-
-bool FindIniFile() noexcept {
-	if (StrEqualEx(szIniFile, L"*?")) {
-		return false;
-	}
-
-	WCHAR tchTest[MAX_PATH];
-	WCHAR tchModule[MAX_PATH];
-	GetProgramRealPath(tchModule, COUNTOF(tchModule));
-
-	if (StrNotEmpty(szIniFile)) {
-		if (!CheckIniFile(szIniFile, tchModule)) {
-			ExpandEnvironmentStringsEx(szIniFile, COUNTOF(szIniFile));
-			if (PathIsRelative(szIniFile)) {
-				lstrcpy(tchTest, tchModule);
-				PathRemoveFileSpec(tchTest);
-				PathAppend(tchTest, szIniFile);
-				lstrcpy(szIniFile, tchTest);
-			}
-		}
-		return true;
-	}
-
-	lstrcpy(tchTest, PathFindFileName(tchModule));
-	PathRenameExtension(tchTest, L".ini");
-	bool bFound = CheckIniFile(tchTest, tchModule);
-
-	if (!bFound) {
-		lstrcpy(tchTest, L"matepath.ini");
-		bFound = CheckIniFile(tchTest, tchModule);
-	}
-
-	if (bFound) {
-		// allow two redirections: administrator -> user -> custom
-		if (CheckIniFileRedirect(tchTest, tchModule)) {
-			CheckIniFileRedirect(tchTest, tchModule);
-		}
-		lstrcpy(szIniFile, tchTest);
-	} else {
-		lstrcpy(szIniFile, tchModule);
-		PathRenameExtension(szIniFile, L".ini");
-	}
-
-	return true;
-}
-
-bool TestIniFile() noexcept {
-	if (StrEqualEx(szIniFile, L"*?")) {
-		StrCpyEx(szIniFile2, L"");
-		StrCpyEx(szIniFile, L"");
-		return false;
-	}
-
-	DWORD dwFileAttributes = GetFileAttributes(szIniFile);
-	if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-		return true;
-	}
-
-	if ((dwFileAttributes != INVALID_FILE_ATTRIBUTES) || (StrNotEmpty(szIniFile) && szIniFile[lstrlen(szIniFile) - 1] == L'\\')) {
-		WCHAR wchModule[MAX_PATH];
-		GetProgramRealPath(wchModule, COUNTOF(wchModule));
-		PathAppend(szIniFile, PathFindFileName(wchModule));
-		PathRenameExtension(szIniFile, L".ini");
-		dwFileAttributes = GetFileAttributes(szIniFile);
-		if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-			lstrcpy(PathFindFileName(szIniFile), L"matepath.ini");
-			dwFileAttributes = GetFileAttributes(szIniFile);
-			if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-				lstrcpy(PathFindFileName(szIniFile), PathFindFileName(wchModule));
-				PathRenameExtension(szIniFile, L".ini");
-				dwFileAttributes = GetFileAttributes(szIniFile);
-			}
+void FindIniFile() noexcept {
+	LPCWSTR tchModule = szExeRealPath;
+	const size_t nameIndex = PathFindFileName(tchModule) - tchModule;
+	WCHAR appData[MAX_PATH];
+	LPWSTR lpszIniFile = szIniFile;
+	bool portable = true;
+	if (StrStr(tchModule, L"WinGet") != nullptr || StrStr(tchModule, L"Chocolatey") != nullptr) {
+		// %LOCALAPPDATA%\Microsoft\WinGet\Packages
+		// ChocolateyInstall
+		LPWSTR pszPath = nullptr;
+		// %LOCALAPPDATA%
+		// C:\Users\<username>\AppData\Local
+		// C:\Documents and Settings\<username>\Local Settings\Application Data
+		if (S_OK == SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
+			// always use %LOCALAPPDATA%\Notepad4 for non-portable installation
+			portable = false;
+			PathCombine(appData, pszPath, WC_NOTEPAD4);
+			lstrcpy(lpszIniFile, appData);
+			PathAppend(lpszIniFile, L"matepath.ini");
+			CoTaskMemFree(pszPath);
 		}
 	}
 
-	if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-		lstrcpy(szIniFile2, szIniFile);
-		StrCpyEx(szIniFile, L"");
-		return false;
+	if (portable) {
+		memcpy(lpszIniFile, tchModule, nameIndex*sizeof(WCHAR));
+		lstrcpy(&lpszIniFile[nameIndex], L"matepath.ini");
 	}
-	return true;
+	if (!PathIsFile(lpszIniFile)) {
+		if (!portable) {
+			SHCreateDirectoryEx(nullptr, appData, nullptr);
+		}
+		WCHAR source[MAX_PATH];
+		memcpy(source, tchModule, nameIndex*sizeof(WCHAR));
+		lstrcpy(&source[nameIndex], L"matepath.ini-default");
+		CopyFile(source, lpszIniFile, TRUE);
+	}
+
+	// inline CreateIniFile() to avoid slow directory creation
+	HANDLE hFile = CreateFile(lpszIniFile,
+					   GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hFile != INVALID_HANDLE_VALUE) {
+		LARGE_INTEGER fileSize;
+		fileSize.QuadPart = 0;
+		if (GetFileSizeEx(hFile, &fileSize) && fileSize.QuadPart < 2) {
+			DWORD dw;
+			WriteFile(hFile, L"\xFEFF[matepath]\r\n", 26, &dw, nullptr);
+		}
+		CloseHandle(hFile);
+	}
 }
 
 bool CreateIniFile(LPCWSTR lpszIniFile) noexcept {
@@ -3265,12 +3092,13 @@ bool DisplayPath(LPCWSTR lpPath, UINT uIdError) {
 	}
 
 	WCHAR szTmp[MAX_PATH];
-	lstrcpy(szTmp, lpPath);
-	ExpandEnvironmentStringsEx(szTmp, COUNTOF(szTmp));
+	if (ExpandEnvironmentStringsEx(lpPath, szTmp)) {
+		lpPath = szTmp;
+	}
 
 	WCHAR szPath[MAX_PATH];
-	if (!SearchPathEx(szTmp, COUNTOF(szPath), szPath)) {
-		lstrcpy(szPath, szTmp);
+	if (!SearchPathEx(lpPath, COUNTOF(szPath), szPath)) {
+		lstrcpy(szPath, lpPath);
 	}
 	PathGetRealPath(nullptr, szPath, szPath);
 
@@ -3445,10 +3273,12 @@ bool ActivatePrevInst() noexcept {
 			SetForegroundWindow(hwnd);
 
 			if (lpPathArg) {
-				ExpandEnvironmentStringsEx(lpPathArg, static_cast<DWORD>(GlobalSize(lpPathArg) / sizeof(WCHAR)));
+				WCHAR tchTmp[MAX_PATH];
+				if (ExpandEnvironmentStringsEx(lpPathArg, tchTmp)) {
+					lstrcpy(lpPathArg, tchTmp);
+				}
 
 				if (PathIsRelative(lpPathArg)) {
-					WCHAR tchTmp[MAX_PATH];
 					GetCurrentDirectory(COUNTOF(tchTmp), tchTmp);
 					PathAppend(tchTmp, lpPathArg);
 					lstrcpy(lpPathArg, tchTmp);
@@ -3477,16 +3307,7 @@ bool ActivatePrevInst() noexcept {
 }
 
 void GetRelaunchParameters(LPWSTR szParameters) noexcept {
-	StrCpyEx(szParameters, L" -f");
-	if (StrNotEmpty(szIniFile)) {
-		lstrcat(szParameters, L" \"");
-		lstrcat(szParameters, szIniFile);
-		lstrcat(szParameters, L"\"");
-	} else {
-		lstrcat(szParameters, L"0");
-	}
-
-	lstrcat(szParameters, L" -n");
+	StrCpyEx(szParameters, L" -n");
 
 	WINDOWPLACEMENT wndpl;
 	wndpl.length = sizeof(WINDOWPLACEMENT);
@@ -3665,7 +3486,8 @@ void LaunchTarget(LPCWSTR lpFileName, bool bOpenNew) {
 			//else
 			GetShortPathName(lpParam, lpParam, MAX_PATH);
 
-			WCHAR szParam[MAX_PATH] = L"";
+			WCHAR szParam[MAX_PATH];
+			SetStrEmpty(szParam);
 			if (StrNotEmpty(szTargetApplicationParams)) {
 				lstrcpyn(szParam, szTargetApplicationParams, COUNTOF(szParam));
 				StrCatBuff(szParam, L" ", COUNTOF(szParam));
@@ -3674,7 +3496,7 @@ void LaunchTarget(LPCWSTR lpFileName, bool bOpenNew) {
 
 			lstrcpy(szTmp, szTargetApplication);
 			WCHAR szFile[MAX_PATH];
-			PathAbsoluteFromApp(szTmp, szFile, true);
+			PathAbsoluteFromApp(szTmp, szFile);
 
 			SHELLEXECUTEINFO sei;
 			memset(&sei, 0, sizeof(SHELLEXECUTEINFO));
@@ -3713,18 +3535,20 @@ void LaunchTarget(LPCWSTR lpFileName, bool bOpenNew) {
 		//else
 		GetShortPathName(lpParam, lpParam, MAX_PATH);
 
-		WCHAR szParam[MAX_PATH] = L"";
+		WCHAR szParam[MAX_PATH];
+		SetStrEmpty(szParam);
 		if (StrNotEmpty(szTargetApplicationParams)) {
 			lstrcpyn(szParam, szTargetApplicationParams, COUNTOF(szParam));
 			StrCatBuff(szParam, L" ", COUNTOF(szParam));
 		}
 		StrCatBuff(szParam, lpParam, COUNTOF(szParam));
 
-		lstrcpy(szTmp, szTargetApplication);
-		ExpandEnvironmentStringsEx(szTmp, COUNTOF(szTmp));
+		if (!ExpandEnvironmentStringsEx(szTargetApplication, szTmp)) {
+			lstrcpy(szTmp, szTargetApplication);
+		}
 
 		WCHAR szFile[MAX_PATH];
-		PathAbsoluteFromApp(szTmp, szFile, true);
+		PathAbsoluteFromApp(szTmp, szFile);
 
 		SHELLEXECUTEINFO sei;
 		memset(&sei, 0, sizeof(SHELLEXECUTEINFO));

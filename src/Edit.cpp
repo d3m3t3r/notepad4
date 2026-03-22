@@ -47,10 +47,6 @@ extern DWORD dwLastIOError;
 extern HWND hDlgFindReplace;
 extern bool bReplaceInitialized;
 
-extern int xFindReplaceDlg;
-extern int yFindReplaceDlg;
-extern int cxFindReplaceDlg;
-
 extern int iDefaultEOLMode;
 extern bool bFixLineEndings;
 extern bool bAutoStripBlanks;
@@ -4239,9 +4235,12 @@ void EditSortLines(EditSortFlag iSortFlags) noexcept {
 	}
 
 	if (iSortFlags & EditSortFlag_Shuffle) {
-		srand(GetTickCount());
+		// srand(GetTickCount());
+		uint32_t state = GetTickCount();
 		for (Sci_Line i = iLineCount - 1; i > 0; i--) {
-			const Sci_Line j = rand() % i;
+			// const Sci_Line j = rand() % i;
+			state = state*1103515245 + 12345; // see TestUtils.h
+			const Sci_Line j = ((state >> 16) & RAND_MAX) % i;
 			const SORTLINE sLine = pLines[i];
 			pLines[i] = pLines[j];
 			pLines[j] = sLine;
@@ -4677,24 +4676,18 @@ void EditSaveSelectionAsFindText(EDITFINDREPLACE *lpefr, int menu, bool findSele
 	}
 }
 
-static void FindReplaceSetFont(HWND hwnd, bool monospaced, HFONT *hFontFindReplaceEdit) noexcept {
-	HWND hwndFind = GetDlgItem(hwnd, IDC_FINDTEXT);
-	HWND hwndRepl = GetDlgItem(hwnd, IDC_REPLACETEXT);
+static void FindReplaceSetFont(HWND hwnd, BOOL monospaced, HFONT *hFontFindReplaceEdit) noexcept {
 	HFONT font = nullptr;
 	if (monospaced) {
-		font = *hFontFindReplaceEdit;
-		if (font == nullptr) {
-			*hFontFindReplaceEdit = font = Style_CreateCodeFont(g_uCurrentDPI);
-		}
+		const UINT dpi = GetWindowDPI(hwnd);
+		font = Style_CreateCodeFont(dpi);
+		*hFontFindReplaceEdit = font;
 	}
 	if (font == nullptr) {
-		// use font from parent window
 		font = GetWindowFont(hwnd);
 	}
-	SetWindowFont(hwndFind, font, TRUE);
-	if (hwndRepl) {
-		SetWindowFont(hwndRepl, font, TRUE);
-	}
+	SendDlgItemMessage(hwnd, IDC_FINDTEXT, WM_SETFONT, AsInteger<WPARAM>(font), TRUE);
+	SendDlgItemMessage(hwnd, IDC_REPLACETEXT, WM_SETFONT, AsInteger<WPARAM>(font), TRUE);
 }
 
 static bool CopySelectionAsFindText(HWND hwnd, EDITFINDREPLACE *lpefr, bool bFirstTime) noexcept {
@@ -4725,7 +4718,7 @@ static bool CopySelectionAsFindText(HWND hwnd, EDITFINDREPLACE *lpefr, bool bFir
 	}
 
 	if (StrNotEmpty(lpszSelection)) {
-		char *lpszEscSel = static_cast<char *>(NP2HeapAlloc((2 * NP2_FIND_REPLACE_LIMIT)));
+		char *lpszEscSel = static_cast<char *>(NP2HeapAlloc((4 * NP2_FIND_REPLACE_LIMIT)));
 		unsigned option = lpefr->option & ~FindReplaceOption_TransformBackslash;
 		if (AddBackslashA(lpszEscSel, lpszSelection)) {
 			if ((lpefr->fuFlags & SCFIND_REGEXP) == 0) {
@@ -4760,7 +4753,7 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 	switch (umsg) {
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-		ResizeDlg_InitX(hwnd, cxFindReplaceDlg, IDC_RESIZEGRIP2);
+		ResizeDlg_InitX(hwnd, &positionRecord.cxFindReplaceDlg, IDC_RESIZEGRIP2);
 
 		HWND hwndFind = GetDlgItem(hwnd, IDC_FINDTEXT);
 		AddBackslashComboBoxSetup(hwndFind);
@@ -4833,10 +4826,10 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 		}
 
 		if (!bSwitchedFindReplace) {
-			if (xFindReplaceDlg == 0 || yFindReplaceDlg == 0) {
+			if (positionRecord.xFindReplaceDlg == 0 || positionRecord.yFindReplaceDlg == 0) {
 				CenterDlgInParent(hwnd);
 			} else {
-				SetDlgPos(hwnd, xFindReplaceDlg, yFindReplaceDlg);
+				SetDlgPos(hwnd, positionRecord.xFindReplaceDlg, positionRecord.yFindReplaceDlg);
 			}
 		} else {
 			bSwitchedFindReplace = 0;
@@ -4876,18 +4869,19 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 	break;
 
 	case WM_DESTROY:
+	case WM_DPICHANGED:
 		if (hFontFindReplaceEdit) {
 			DeleteObject(hFontFindReplaceEdit);
 			hFontFindReplaceEdit = nullptr;
 		}
-		ResizeDlg_Destroy(hwnd, &cxFindReplaceDlg, nullptr);
+		if (umsg == WM_DPICHANGED && IsButtonChecked(hwnd, IDC_USEMONOSPACEDFONT)) {
+			FindReplaceSetFont(hwnd, TRUE, &hFontFindReplaceEdit);
+		}
 		return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-
+		const int dx = GET_X_LPARAM(lParam);
 		const bool isReplace = GetDlgItem(hwnd, IDC_REPLACETEXT) != nullptr;
-		ResizeDlg_Size(hwnd, lParam, &dx, nullptr);
 		HDWP hdwp = BeginDeferWindowPos(isReplace ? 13 : 9);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP2, dx, 0, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, 0, SWP_NOSIZE);
@@ -4907,10 +4901,6 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 		EndDeferWindowPos(hdwp);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
@@ -4965,6 +4955,10 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 				iFindReplaceOption &= ~mask;
 			}
 			if (LOWORD(wParam) == IDC_USEMONOSPACEDFONT) {
+				if (hFontFindReplaceEdit) { // dpi may changed between toggle monospaced font
+					DeleteObject(hFontFindReplaceEdit);
+					hFontFindReplaceEdit = nullptr;
+				}
 				FindReplaceSetFont(hwnd, iFindReplaceOption & FindReplaceOption_UseMonospacedFont, &hFontFindReplaceEdit);
 			}
 		} break;
@@ -5211,12 +5205,12 @@ static INT_PTR CALLBACK EditFindReplaceDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 			break;
 
 			case IDC_SAVEPOSITION:
-				GetDlgPos(hwnd, &xFindReplaceDlg, &yFindReplaceDlg);
+				GetDlgPos(hwnd, &positionRecord.xFindReplaceDlg, &positionRecord.yFindReplaceDlg);
 				break;
 
 			case IDC_RESETPOSITION:
 				CenterDlgInParent(hwnd);
-				xFindReplaceDlg = yFindReplaceDlg = 0;
+				positionRecord.xFindReplaceDlg = positionRecord.yFindReplaceDlg = 0;
 				break;
 			}
 			break;
@@ -6120,13 +6114,6 @@ bool EditLineNumDlg(HWND hwnd) noexcept {
 // EditModifyLinesDlg()
 //
 //
-extern int cxModifyLinesDlg;
-extern int cyModifyLinesDlg;
-extern int cxEncloseSelectionDlg;
-extern int cyEncloseSelectionDlg;
-extern int cxInsertTagDlg;
-extern int cyInsertTagDlg;
-
 static INT_PTR CALLBACK EditModifyLinesDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) noexcept {
 	static DWORD id_hover;
 	static DWORD id_capture;
@@ -6135,16 +6122,12 @@ static INT_PTR CALLBACK EditModifyLinesDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 
 	switch (umsg) {
 	case WM_INITDIALOG: {
-		ResizeDlg_InitY2(hwnd, cxModifyLinesDlg, cyModifyLinesDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
+		ResizeDlg_InitY2(hwnd, &positionRecord.cxModifyLinesDlg, &positionRecord.cyModifyLinesDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 
 		id_hover = 0;
 		id_capture = 0;
 
-		HFONT hFontNormal = AsPointer<HFONT>(SendDlgItemMessage(hwnd, IDC_MODIFY_LINE_DLN_NP, WM_GETFONT, 0, 0));
-		if (hFontNormal == nullptr) {
-			hFontNormal = GetStockFont(DEFAULT_GUI_FONT);
-		}
-
+		HFONT hFontNormal = GetWindowFont(hwnd);
 		LOGFONT lf;
 		GetObject(hFontNormal, sizeof(LOGFONT), &lf);
 		lf.lfUnderline = TRUE;
@@ -6162,22 +6145,19 @@ static INT_PTR CALLBACK EditModifyLinesDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 	return TRUE;
 
 	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxModifyLinesDlg, &cyModifyLinesDlg);
 		DeleteObject(hFontHover);
 		return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		const int cy = ResizeDlg_CalcDeltaY2(hwnd, dy, 50, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 		HDWP hdwp = BeginDeferWindowPos(15);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP2, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_PREFIX, dx, cy, SWP_NOMOVE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, dx, dy - cy);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_TIP2, 0, cy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_SKIP_EMPTY, 0, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_DLN_NP, 0, dy, SWP_NOSIZE);
@@ -6190,13 +6170,8 @@ static INT_PTR CALLBACK EditModifyLinesDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_ZCN_ZP, 0, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_TIP_ZCN, 0, dy, SWP_NOSIZE);
 		EndDeferWindowPos(hdwp);
-		ResizeDlgCtl(hwnd, IDC_MODIFY_LINE_APPEND, dx, dy - cy);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NCACTIVATE:
 		if (!wParam) {
@@ -6220,7 +6195,7 @@ static INT_PTR CALLBACK EditModifyLinesDlgProc(HWND hwnd, UINT umsg, WPARAM wPar
 			} else {
 				SetTextColor(hdc, RGB(0, 0, 255));
 			}
-			SelectObject(hdc, /*dwId == id_hover?*/hFontHover/*:hFontNormal*/);
+			SelectFont(hdc, /*dwId == id_hover?*/hFontHover/*:hFontNormal*/);
 			return AsInteger<LONG_PTR>(GetSysColorBrush(COLOR_BTNFACE));
 		}
 	}
@@ -6383,7 +6358,7 @@ bool EditAlignDlg(HWND hwnd, EditAlignMode *piAlignMode) noexcept {
 static INT_PTR CALLBACK EditEncloseSelectionDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) noexcept {
 	switch (umsg) {
 	case WM_INITDIALOG: {
-		ResizeDlg_InitY2(hwnd, cxEncloseSelectionDlg, cyEncloseSelectionDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
+		ResizeDlg_InitY2(hwnd, &positionRecord.cxEncloseSelectionDlg, &positionRecord.cyEncloseSelectionDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 
 		MultilineEditSetup(hwnd, IDC_MODIFY_LINE_PREFIX);
 		SetDlgItemText(hwnd, IDC_MODIFY_LINE_PREFIX, wchPrefixSelection);
@@ -6393,31 +6368,20 @@ static INT_PTR CALLBACK EditEncloseSelectionDlgProc(HWND hwnd, UINT umsg, WPARAM
 	}
 	return TRUE;
 
-	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxEncloseSelectionDlg, &cyEncloseSelectionDlg);
-		return FALSE;
-
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		const int cy = ResizeDlg_CalcDeltaY2(hwnd, dy, 50, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP2, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_PREFIX, dx, cy, SWP_NOMOVE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, dx, dy - cy);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_TIP2, 0, cy, SWP_NOSIZE);
 		EndDeferWindowPos(hdwp);
-		ResizeDlgCtl(hwnd, IDC_MODIFY_LINE_APPEND, dx, dy - cy);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
@@ -6458,7 +6422,7 @@ void EditEncloseSelectionDlg(HWND hwnd) noexcept {
 static INT_PTR CALLBACK EditInsertTagDlgProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam) noexcept {
 	switch (umsg) {
 	case WM_INITDIALOG: {
-		ResizeDlg_InitY2(hwnd, cxInsertTagDlg, cyInsertTagDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
+		ResizeDlg_InitY2(hwnd, &positionRecord.cxInsertTagDlg, &positionRecord.cyInsertTagDlg, IDC_RESIZEGRIP2, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 
 		MultilineEditSetup(hwnd, IDC_MODIFY_LINE_PREFIX);
 		MultilineEditSetup(hwnd, IDC_MODIFY_LINE_APPEND);
@@ -6471,31 +6435,20 @@ static INT_PTR CALLBACK EditInsertTagDlgProc(HWND hwnd, UINT umsg, WPARAM wParam
 	}
 	return FALSE;
 
-	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxInsertTagDlg, &cyInsertTagDlg);
-		return FALSE;
-
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		const int cy = ResizeDlg_CalcDeltaY2(hwnd, dy, 75, IDC_MODIFY_LINE_PREFIX, IDC_MODIFY_LINE_APPEND);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP2, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDCANCEL, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_PREFIX, dx, cy, SWP_NOMOVE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_MODIFY_LINE_APPEND, 0, cy, dx, dy - cy);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_MODIFY_LINE_TIP2, 0, cy, SWP_NOSIZE);
 		EndDeferWindowPos(hdwp);
-		ResizeDlgCtl(hwnd, IDC_MODIFY_LINE_APPEND, dx, dy - cy);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
@@ -6732,6 +6685,7 @@ static const UnicodeControlCharacter kUnicodeControlCharacterTable[] = {
 	{ "\xe2\x81\xa8", "FSI" },	// U+2068	FSI		First strong isolate
 	{ "\xe2\x81\xa9", "PDI" },	// U+2069	PDI		Pop directional isolate
 	{ "\xd8\x9c", "ALM" },		// U+061C	ALM		Arabic letter mark
+	{ "\xc2\xad", "SHY" },		// U+00AD	SHY		Soft hyphen
 };
 
 void EditInsertUnicodeControlCharacter(int menu) noexcept {
@@ -6910,7 +6864,7 @@ void EditSelectionAction(int action) noexcept {
 		L"CustomAction2",
 	};
 
-	WCHAR szCmdTemplate[256];
+	WCHAR szCmdTemplate[MAX_PATH*2];
 	action -= CMD_ONLINE_SEARCH_GOOGLE;
 	LPCWSTR actionKey = kActionKeys[action];
 	BOOL bCmdEnabled = IniGetString(INI_SECTION_NAME_FLAGS, actionKey, L"", szCmdTemplate, COUNTOF(szCmdTemplate));
@@ -6927,15 +6881,18 @@ void EditSelectionAction(int action) noexcept {
 		return;
 	}
 
-	LPWSTR lpszCommand = static_cast<LPWSTR>(NP2HeapAlloc(sizeof(WCHAR) * (cchEscapedW + COUNTOF(szCmdTemplate) + MAX_PATH + 32)));
+	LPWSTR lpszCommand = static_cast<LPWSTR>(NP2HeapAlloc(sizeof(WCHAR) * (cchEscapedW + COUNTOF(szCmdTemplate) + 32)));
 	const size_t cbCommand = NP2HeapSize(lpszCommand);
 	wsprintf(lpszCommand, szCmdTemplate, pszEscapedW);
 
 	LPWSTR lpszArgs = static_cast<LPWSTR>(NP2HeapAlloc(cbCommand));
 	ExtractFirstArgument(lpszCommand, lpszCommand, lpszArgs);
-	ExpandEnvironmentStringsEx(lpszArgs, static_cast<DWORD>(cbCommand / sizeof(WCHAR)));
+	if (ExpandEnvironmentStringsEx(lpszArgs, szCmdTemplate)) {
+		lstrcpy(lpszArgs, szCmdTemplate);
+	}
 
-	WCHAR wchDirectory[MAX_PATH] = L"";
+	auto &wchDirectory = szCmdTemplate;
+	SetStrEmpty(wchDirectory);
 	if (StrNotEmpty(szCurFile)) {
 		lstrcpy(wchDirectory, szCurFile);
 		PathRemoveFileSpec(wchDirectory);
@@ -6960,9 +6917,11 @@ void EditSelectionAction(int action) noexcept {
 }
 
 void TryBrowseFile(HWND hwnd, LPCWSTR pszFile, bool bWarn) noexcept {
-	WCHAR tchParam[MAX_PATH + 4] = L"";
-	WCHAR tchExeFile[MAX_PATH + 4] = L"";
+	WCHAR tchParam[MAX_PATH + 4];
+	WCHAR tchExeFile[MAX_PATH + 4];
 	WCHAR tchTemp[MAX_PATH + 4];
+	SetStrEmpty(tchParam);
+	SetStrEmpty(tchExeFile);
 
 	if (IniGetString(INI_SECTION_NAME_FLAGS, L"filebrowser.exe", L"", tchTemp, COUNTOF(tchTemp))) {
 		ExtractFirstArgument(tchTemp, tchExeFile, tchParam);
@@ -6971,7 +6930,7 @@ void TryBrowseFile(HWND hwnd, LPCWSTR pszFile, bool bWarn) noexcept {
 		lstrcpy(tchExeFile, L"matepath.exe");
 	}
 	if (PathIsRelative(tchExeFile)) {
-		GetProgramRealPath(tchTemp, COUNTOF(tchTemp));
+		lstrcpy(tchTemp, szExeRealPath);
 		PathRemoveFileSpec(tchTemp);
 		PathAppend(tchTemp, tchExeFile);
 		if (PathIsFile(tchTemp)) {
@@ -7096,7 +7055,7 @@ char *EditGetStringAroundCaret(LPCSTR delimiters) noexcept {
 
 extern bool bOpenFolderWithMatepath;
 
-static DWORD EditOpenSelectionCheckFile(LPCWSTR link, LPWSTR path, DWORD cchFilePath, LPWSTR wchDirectory) noexcept {
+static DWORD EditOpenSelectionCheckFile(LPCWSTR link, wchar_t (&path)[MAX_PATH*2], LPWSTR wchDirectory) noexcept {
 	if (StrStartsWith(link, L"//")) {
 		// issue #454, treat as link
 		lstrcpy(path, L"http:");
@@ -7105,9 +7064,10 @@ static DWORD EditOpenSelectionCheckFile(LPCWSTR link, LPWSTR path, DWORD cchFile
 	}
 
 	DWORD dwAttributes = GetFileAttributes(link);
+	constexpr DWORD cchFilePath = COUNTOF(path);
 	if (dwAttributes == INVALID_FILE_ATTRIBUTES) {
 		// handle variables expanded into absolute path, avoid touch percent encoded URL
-		if (link[0] == '%' && ExpandEnvironmentStrings(link, path, cchFilePath)) {
+		if (link[0] == '%' && ExpandEnvironmentStringsEx(link, path)) {
 			dwAttributes = GetFileAttributes(path);
 		}
 		if (dwAttributes == INVALID_FILE_ATTRIBUTES && StrNotEmpty(szCurFile)) {
@@ -7219,12 +7179,12 @@ void EditOpenSelection(OpenSelectionType type) {
 
 		WCHAR path[MAX_PATH * 2];
 		WCHAR wchDirectory[MAX_PATH];
-		DWORD dwAttributes = EditOpenSelectionCheckFile(link, path, COUNTOF(path), wchDirectory);
+		DWORD dwAttributes = EditOpenSelectionCheckFile(link, path, wchDirectory);
 		if (dwAttributes == INVALID_FILE_ATTRIBUTES) {
 			if (line != nullptr) {
 				const WCHAR ch = *back;
 				*back = L'\0';
-				dwAttributes = EditOpenSelectionCheckFile(link, path, COUNTOF(path), wchDirectory);
+				dwAttributes = EditOpenSelectionCheckFile(link, path, wchDirectory);
 				if (dwAttributes == INVALID_FILE_ATTRIBUTES) {
 					// line is port number or the file not exists
 					*back = ch;

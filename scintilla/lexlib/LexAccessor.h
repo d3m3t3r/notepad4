@@ -147,8 +147,8 @@ public:
 	void GetRange(Sci_PositionU startPos_, Sci_PositionU endPos_, char *s, Sci_PositionU len) const noexcept;
 	void GetRangeLowered(Sci_PositionU startPos_, Sci_PositionU endPos_, char *s, Sci_PositionU len) const noexcept;
 	// Get all characters in range [startPos_, endPos_).
-	std::string GetRange(Sci_PositionU startPos_, Sci_PositionU endPos_) const;
-	std::string GetRangeLowered(Sci_PositionU startPos_, Sci_PositionU endPos_) const;
+	void GetRange(Sci_PositionU startPos_, Sci_PositionU endPos_, std::string &s) const;
+	void GetRangeLowered(Sci_PositionU startPos_, Sci_PositionU endPos_, std::string &s) const;
 
 	// Flush() must be called first when used in Colourise() or Lex() function.
 	unsigned char StyleAt(Sci_Position position) const noexcept {
@@ -220,26 +220,30 @@ public:
 		ColorTo(pos + 1, chAttr);
 	}
 #endif
+	// styling in range [startSeg, endPos_)
 	void ColorTo(Sci_PositionU endPos_, int chAttr) {
 		// Only perform styling if non empty range
-		assert(endPos_ <= static_cast<Sci_PositionU>(Length()));
+		assert(endPos_ >= startSeg && endPos_ <= static_cast<Sci_PositionU>(Length()));
 		if (endPos_ > startSeg) {
-			const Sci_PositionU len = endPos_ - startSeg;
+			Sci_PositionU len = endPos_ - startSeg;
 			if (validLen + len >= bufferSize) {
 				Flush();
 			}
+			assert((startPosStyling + validLen + len) <= static_cast<Sci_PositionU>(Length()));
 			const auto attr = static_cast<unsigned char>(chAttr);
-			if (validLen + len >= bufferSize) {
+			startSeg += len;
+			if (validLen + len < bufferSize) {
+				unsigned char *ptr = styleBuf + validLen;
+				validLen += len;
+				do {
+					*ptr++ = attr;
+					--len;
+				} while (len != 0);
+			} else {
 				// Too big for buffer so send directly
 				pAccess->SetStyleFor(len, attr);
-			} else {
-				for (Sci_PositionU i = 0; i < len; i++) {
-					assert((startPosStyling + validLen) < static_cast<Sci_PositionU>(Length()));
-					styleBuf[validLen++] = attr;
-				}
 			}
 		}
-		startSeg = endPos_;
 	}
 	void SetLevel(Sci_Line line, int level) {
 		pAccess->SetLevel(line, level);

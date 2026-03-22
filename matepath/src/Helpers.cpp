@@ -41,7 +41,7 @@
 
 void IniClearSectionEx(LPCWSTR lpSection, LPCWSTR lpszIniFile, bool bDelete) noexcept {
 	if (StrIsEmpty(lpszIniFile)) {
-		return;
+		return; // win.ini
 	}
 
 	WritePrivateProfileSection(lpSection, (bDelete ? nullptr : L""), lpszIniFile);
@@ -49,7 +49,7 @@ void IniClearSectionEx(LPCWSTR lpSection, LPCWSTR lpszIniFile, bool bDelete) noe
 
 void IniClearAllSectionEx(LPCWSTR lpszPrefix, LPCWSTR lpszIniFile, bool bDelete) noexcept {
 	if (StrIsEmpty(lpszIniFile)) {
-		return;
+		return; // win.ini
 	}
 
 	WCHAR sections[1024] = L"";
@@ -302,44 +302,23 @@ int ParseCommaList(LPCWSTR str, int result[], int count) noexcept {
 	return index;
 }
 
-bool FindUserResourcePath(LPCWSTR path, LPWSTR outPath) noexcept {
-	// similar to CheckIniFile()
-	WCHAR tchFileExpanded[MAX_PATH];
-	ExpandEnvironmentStrings(path, tchFileExpanded, COUNTOF(tchFileExpanded));
-
-	if (PathIsRelative(tchFileExpanded)) {
-		WCHAR tchBuild[MAX_PATH];
-		// relative to program ini file
-		if (StrNotEmpty(szIniFile)) {
-			lstrcpy(tchBuild, szIniFile);
-			lstrcpy(PathFindFileName(tchBuild), tchFileExpanded);
-			if (PathIsFile(tchBuild)) {
-				lstrcpy(outPath, tchBuild);
-				return true;
-			}
-		}
-
-		// relative to program exe file
-		GetProgramRealPath(tchBuild, COUNTOF(tchBuild));
-		lstrcpy(PathFindFileName(tchBuild), tchFileExpanded);
-		if (PathIsFile(tchBuild)) {
-			lstrcpy(outPath, tchBuild);
-			return true;
-		}
-	} else if (PathIsFile(tchFileExpanded)) {
-		lstrcpy(outPath, tchFileExpanded);
-		return true;
-	}
-	return false;
-}
-
 HBITMAP LoadBitmapFile(LPCWSTR path) noexcept {
+	WCHAR tchFileExpanded[MAX_PATH];
 	WCHAR szTmp[MAX_PATH];
-	if (!FindUserResourcePath(path, szTmp)) {
+	if (ExpandEnvironmentStringsEx(path, tchFileExpanded)) {
+		path = tchFileExpanded;
+	}
+	if (PathIsRelative(path)) {
+		// relative to program ini file
+		lstrcpy(szTmp, szIniFile);
+		lstrcpy(PathFindFileName(szTmp), path);
+		path = szTmp;
+	}
+	if (!PathIsFile(path)) {
 		return nullptr;
 	}
 
-	HBITMAP hbmp = static_cast<HBITMAP>(LoadImage(nullptr, szTmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE));
+	HBITMAP hbmp = static_cast<HBITMAP>(LoadImage(nullptr, path, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE));
 	return hbmp;
 }
 
@@ -500,7 +479,7 @@ bool BitmapAlphaBlend(HBITMAP hbmp, COLORREF crDest, BYTE alpha) noexcept {
 		if (bmp.bmBitsPixel == 32) {
 #if 0//NP2_USE_AVX512
 			#define BitmapAlphaBlend_Tag	"avx512 8x1"
-			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 8;
+			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 8U;
 			__m256i *prgba = static_cast<__m256i *>(bmp.bmBits);
 
 			const __m512i i16x32Alpha = _mm512_broadcastw_epi16(_mm_cvtsi32_si128(alpha));
@@ -519,7 +498,7 @@ bool BitmapAlphaBlend(HBITMAP hbmp, COLORREF crDest, BYTE alpha) noexcept {
 #elif NP2_USE_AVX2
 #if 1
 			#define BitmapAlphaBlend_Tag	"avx2 4x1"
-			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 4;
+			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 4U;
 			__m128i *prgba = static_cast<__m128i *>(bmp.bmBits);
 
 			const __m256i i16x16Alpha = _mm256_broadcastw_epi16(_mm_cvtsi32_si128(alpha));
@@ -536,7 +515,7 @@ bool BitmapAlphaBlend(HBITMAP hbmp, COLORREF crDest, BYTE alpha) noexcept {
 			}
 #else
 			#define BitmapAlphaBlend_Tag	"sse4 2x1"
-			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 2;
+			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 2U;
 			uint64_t *prgba = static_cast<uint64_t *>(bmp.bmBits);
 
 			const __m128i i16x8Alpha = _mm_broadcastw_epi16(_mm_cvtsi32_si128(alpha));
@@ -553,7 +532,7 @@ bool BitmapAlphaBlend(HBITMAP hbmp, COLORREF crDest, BYTE alpha) noexcept {
 #endif // NP2_USE_AVX2
 #elif NP2_USE_SSE2
 			#define BitmapAlphaBlend_Tag	"sse2 1x4"
-			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 4;
+			const ULONG count = (bmp.bmHeight * bmp.bmWidth) / 4U;
 			__m128i *prgba = static_cast<__m128i *>(bmp.bmBits);
 
 			const __m128i i16x8Alpha = _mm_shuffle_epi32(mm_setlo_alpha_epi16(alpha), 0x44);
@@ -718,150 +697,177 @@ void SetDlgPos(HWND hDlg, int xDlg, int yDlg) noexcept {
 //
 // Resize Dialog Helpers()
 //
+namespace {
+
 #define RESIZEDLG_PROP_KEY	L"ResizeDlg"
-#define MAX_RESIZEDLG_ATTR_COUNT	2
-// temporary fix for moving dialog to monitor with different DPI
-// TODO: all dimensions no longer valid after window DPI changed.
-#define NP2_ENABLE_RESIZEDLG_TEMP_FIX	0
+// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdialogbaseunits
+constexpr SIZE DlgBaseUnit = {4, 8};
 
 struct RESIZEDLG {
-	int direction;
+	BOOL dpiChanged;
 	UINT dpi;
-	int cxClient;
-	int cyClient;
-	int mmiPtMinX;
-	int mmiPtMinY;
-	int mmiPtMaxX;	// only Y direction
-	int mmiPtMaxY;	// only X direction
-	int attrs[MAX_RESIZEDLG_ATTR_COUNT];
+	int *cxFrame;
+	int *cyFrame;
+	SIZE client;
+	POINT minTrackSize;
+	SIZE templateSize;
 };
 
-void ResizeDlg_InitEx(HWND hwnd, int cxFrame, int cyFrame, int nIdGrip, int iDirection) noexcept {
+}
+
+void GetDialogBaseUnitForDPI(HWND hwnd, UINT dpi, UINT old, SIZE &baseUnit) noexcept {
+	HFONT font = GetWindowFont(hwnd);
+	LOGFONT lf;
+	GetObject(font, sizeof(lf), &lf);
+	lf.lfHeight = MulDiv(lf.lfHeight, dpi, old);
+	font = CreateFontIndirect(&lf);
+	HDC hdc = GetDC(hwnd);
+	HFONT oldFont = SelectFont(hdc, font);
+	// this implements GdiGetCharDimensions() which system used to calculate dialog base unit, see also MFC CDialogTemplate class
+	// wsvAllAlpha is same as SurfaceD2D::AverageCharWidth()
+	constexpr const wchar_t * const wsvAllAlpha = L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	GetTextExtentPoint32(hdc, wsvAllAlpha, 52, &baseUnit);
+	baseUnit.cx = (baseUnit.cx + 26)/52U;
+	SelectFont(hdc, oldFont);
+	ReleaseDC(hwnd, hdc);
+	DeleteObject(font);
+}
+
+static LRESULT CALLBACK ResizeDlg_Proc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) noexcept {
+	RESIZEDLG * const pm = AsPointer<RESIZEDLG *>(dwRefData);
+
+	switch (umsg) {
+	case WM_SIZE: {
+		const int cx = LOWORD(lParam);
+		const int cy = HIWORD(lParam);
+		const int dx = cx - pm->client.cx;
+		const int dy = cy - pm->client.cy;
+		lParam = MAKELPARAM(dx, dy); // unpack with GET_X_LPARAM() and GET_Y_LPARAM()
+		pm->client.cx = cx;
+		pm->client.cy = cy;
+		if (pm->dpiChanged) {
+			// skip first WM_SIZE message during WM_DPICHANGED, dialog control already has correct layout
+			// until end of WM_DPICHANGED block, pm->client contains outdated value
+			pm->dpiChanged = FALSE;
+			return TRUE;
+		}
+	} break;
+
+	case WM_GETMINMAXINFO: {
+		LPMINMAXINFO pmmi = AsPointer<LPMINMAXINFO>(lParam);
+		pmmi->ptMinTrackSize = pm->minTrackSize;
+		// only one direction
+		if (pm->cyFrame == nullptr) {
+			pmmi->ptMaxTrackSize.y = pm->minTrackSize.y;
+		}
+		if (pm->cxFrame == nullptr) {
+			pmmi->ptMaxTrackSize.x = pm->minTrackSize.x;
+		}
+	}
+	return 0;
+
+	case WM_DPICHANGED: {
+		const UINT dpi = HIWORD(wParam);
+		const UINT old = pm->dpi;
+		pm->dpiChanged = TRUE;
+		pm->dpi = dpi;
+		// convert all dimension to current dpi
+		SIZE baseUnit {};
+		// at this time font on the dialog is still unchanged, otherwise we can use MapDialogRect() to get new base unit
+		GetDialogBaseUnitForDPI(hwnd, dpi, old, baseUnit);
+		// can't linear resize pm->client as that may not fit into work area of new monitor
+		RECT rect;
+		rect.left = 0;
+		rect.top = 0;
+		rect.right = MulDiv(pm->templateSize.cx, baseUnit.cx, DlgBaseUnit.cx);
+		rect.bottom = MulDiv(pm->templateSize.cy, baseUnit.cy, DlgBaseUnit.cy);
+		AdjustWindowRectForDpi(&rect, GetWindowStyle(hwnd), GetWindowExStyle(hwnd), pm->dpi);
+		pm->minTrackSize.x = rect.right - rect.left;
+		pm->minTrackSize.y = rect.bottom - rect.top;
+
+		const RECT * const rc = AsPointer<RECT *>(lParam);
+		const int cx = rc->right - rc->left;
+		const int cy = rc->bottom - rc->top;
+		// cx, cy and non-client size from above adjusted rect can be used to calculate pm->client
+		SetWindowPos(hwnd, nullptr, rc->left, rc->top, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+		// pm->client is same or already updated in WM_SIZE message
+		pm->dpiChanged = FALSE; // see MsgDPIChanged(), no WM_SIZE when dpi is same on Windows 8.1
+	} break;
+
+	case WM_DESTROY: {
+		RECT rc = {DlgBaseUnit.cx, DlgBaseUnit.cy, 0, 0};
+		MapDialogRect(hwnd, &rc);
+		if (pm->cxFrame != nullptr) {
+			const int cx = MulDiv(pm->client.cx, DlgBaseUnit.cx, rc.left);
+			*pm->cxFrame = (cx <= pm->templateSize.cx) ? 0 : cx;
+		}
+		if (pm->cyFrame != nullptr) {
+			const int cy = MulDiv(pm->client.cy, DlgBaseUnit.cy, rc.top);
+			*pm->cyFrame = (cy <= pm->templateSize.cy) ? 0 : cy;
+		}
+		RemoveWindowSubclass(hwnd, ResizeDlg_Proc, uIdSubclass);
+		RemoveProp(hwnd, RESIZEDLG_PROP_KEY);
+		NP2HeapFree(pm);
+	} break;
+
+	default:
+		break;
+	}
+
+	return DefSubclassProc(hwnd, umsg, wParam, lParam);
+}
+
+void ResizeDlg_InitEx(HWND hwnd, int *cxFrame, int *cyFrame, int nIdGrip) noexcept {
 	const UINT dpi = GetWindowDPI(hwnd);
 	RESIZEDLG * const pm = static_cast<RESIZEDLG *>(NP2HeapAlloc(sizeof(RESIZEDLG)));
-	pm->direction = iDirection;
 	pm->dpi = dpi;
 
-	RECT rc;
+	RECT rc = {DlgBaseUnit.cx, DlgBaseUnit.cy, 0, 0};
+	MapDialogRect(hwnd, &rc);
+	const SIZE baseUnit = {rc.left, rc.top};
+
 	GetClientRect(hwnd, &rc);
-	pm->cxClient = rc.right - rc.left;
-	pm->cyClient = rc.bottom - rc.top;
+	int cx = rc.right - rc.left;
+	int cy = rc.bottom - rc.top;
+	pm->client.cx = cx;
+	pm->client.cy = cy;
+	pm->templateSize.cx = MulDiv(cx, DlgBaseUnit.cx, baseUnit.cx);
+	pm->templateSize.cy = MulDiv(cy, DlgBaseUnit.cy, baseUnit.cy);
 
-	const DWORD style = GetWindowStyle(hwnd) | WS_THICKFRAME;
-	AdjustWindowRectForDpi(&rc, style, 0, dpi);
-	pm->mmiPtMinX = rc.right - rc.left;
-	pm->mmiPtMinY = rc.bottom - rc.top;
-	// only one direction
-	switch (iDirection) {
-	case ResizeDlgDirection_OnlyX:
-		pm->mmiPtMaxY = pm->mmiPtMinY;
-		break;
+	GetWindowRect(hwnd, &rc);
+	cx = rc.right - rc.left;
+	cy = rc.bottom - rc.top;
+	pm->minTrackSize.x = cx;
+	pm->minTrackSize.y = cy;
 
-	case ResizeDlgDirection_OnlyY:
-		pm->mmiPtMaxX = pm->mmiPtMinX;
-		break;
+	if (cxFrame != nullptr) {
+		pm->cxFrame = cxFrame;
+		if (*cxFrame > pm->templateSize.cx) {
+			cx = cx - pm->client.cx + MulDiv(*cxFrame, baseUnit.cx, DlgBaseUnit.cx);
+		}
 	}
-
-	cxFrame = max(cxFrame, pm->mmiPtMinX);
-	cyFrame = max(cyFrame, pm->mmiPtMinY);
+	if (cyFrame != nullptr) {
+		pm->cyFrame = cyFrame;
+		if (*cyFrame > pm->templateSize.cy) {
+			cy = cy - pm->client.cy + MulDiv(*cyFrame, baseUnit.cy, DlgBaseUnit.cy);
+		}
+	}
 
 	SetProp(hwnd, RESIZEDLG_PROP_KEY, pm);
+	SetWindowSubclass(hwnd, ResizeDlg_Proc, 0, AsInteger<DWORD_PTR>(pm));
 
-	SetWindowPos(hwnd, nullptr, rc.left, rc.top, cxFrame, cyFrame, SWP_NOZORDER);
+	SetWindowPos(hwnd, nullptr, 0, 0, cx, cy, SWP_NOZORDER | SWP_NOMOVE);
 
-	SetWindowStyle(hwnd, style);
-	SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
-
-	WCHAR wch[64];
-	GetMenuString(GetSystemMenu(GetParent(hwnd), FALSE), SC_SIZE, wch, COUNTOF(wch), MF_BYCOMMAND);
-	InsertMenu(GetSystemMenu(hwnd, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_STRING | MF_ENABLED, SC_SIZE, wch);
-	InsertMenu(GetSystemMenu(hwnd, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_SEPARATOR, 0, nullptr);
+#if 0
+	HMENU hmenu = GetSystemMenu(hwnd, FALSE);
+	DeleteMenu(hmenu, SC_RESTORE, MF_BYCOMMAND);
+	DeleteMenu(hmenu, SC_MINIMIZE, MF_BYCOMMAND);
+	DeleteMenu(hmenu, SC_MAXIMIZE, MF_BYCOMMAND);
+#endif
 
 	HWND hwndCtl = GetDlgItem(hwnd, nIdGrip);
-	SetWindowStyle(hwndCtl, GetWindowStyle(hwndCtl) | SBS_SIZEGRIP | WS_CLIPSIBLINGS);
-	const int cGrip = SystemMetricsForDpi(SM_CXHTHUMB, dpi);
-	SetWindowPos(hwndCtl, nullptr, pm->cxClient - cGrip, pm->cyClient - cGrip, cGrip, cGrip, SWP_NOZORDER);
-}
-
-void ResizeDlg_Destroy(HWND hwnd, int *cxFrame, int *cyFrame) noexcept {
-	RESIZEDLG * const pm = static_cast<RESIZEDLG *>(GetProp(hwnd, RESIZEDLG_PROP_KEY));
-
-	RECT rc;
-	GetWindowRect(hwnd, &rc);
-	if (cxFrame) {
-		*cxFrame = rc.right - rc.left;
-	}
-	if (cyFrame) {
-		*cyFrame = rc.bottom - rc.top;
-	}
-
-	RemoveProp(hwnd, RESIZEDLG_PROP_KEY);
-	NP2HeapFree(pm);
-}
-
-void ResizeDlg_Size(HWND hwnd, LPARAM lParam, int *cx, int *cy) noexcept {
-	RESIZEDLG * const pm = static_cast<RESIZEDLG *>(GetProp(hwnd, RESIZEDLG_PROP_KEY));
-	const int cxClient = LOWORD(lParam);
-	const int cyClient = HIWORD(lParam);
-#if NP2_ENABLE_RESIZEDLG_TEMP_FIX
-	const UINT dpi = GetWindowDPI(hwnd);
-	const UINT old = pm->dpi;
-	if (cx) {
-		*cx = cxClient - MulDiv(pm->cxClient, dpi, old);
-	}
-	if (cy) {
-		*cy = cyClient - MulDiv(pm->cyClient, dpi, old);
-	}
-	// store in original DPI.
-	pm->cxClient = MulDiv(cxClient, old, dpi);
-	pm->cyClient = MulDiv(cyClient, old, dpi);
-#else
-	if (cx) {
-		*cx = cxClient - pm->cxClient;
-	}
-	if (cy) {
-		*cy = cyClient - pm->cyClient;
-	}
-	pm->cxClient = cxClient;
-	pm->cyClient = cyClient;
-#endif
-}
-
-void ResizeDlg_GetMinMaxInfo(HWND hwnd, LPARAM lParam) noexcept {
-	const RESIZEDLG * const pm = static_cast<RESIZEDLG *>(GetProp(hwnd, RESIZEDLG_PROP_KEY));
-	LPMINMAXINFO lpmmi = AsPointer<LPMINMAXINFO>(lParam);
-#if NP2_ENABLE_RESIZEDLG_TEMP_FIX
-	const UINT dpi = GetWindowDPI(hwnd);
-	const UINT old = pm->dpi;
-
-	lpmmi->ptMinTrackSize.x = MulDiv(pm->mmiPtMinX, dpi, old);
-	lpmmi->ptMinTrackSize.y = MulDiv(pm->mmiPtMinY, dpi, old);
-
-	// only one direction
-	switch (pm->direction) {
-	case ResizeDlgDirection_OnlyX:
-		lpmmi->ptMaxTrackSize.y = MulDiv(pm->mmiPtMaxY, dpi, old);
-		break;
-
-	case ResizeDlgDirection_OnlyY:
-		lpmmi->ptMaxTrackSize.x = MulDiv(pm->mmiPtMaxX, dpi, old);
-		break;
-	}
-#else
-	lpmmi->ptMinTrackSize.x = pm->mmiPtMinX;
-	lpmmi->ptMinTrackSize.y = pm->mmiPtMinY;
-
-	// only one direction
-	switch (pm->direction) {
-	case ResizeDlgDirection_OnlyX:
-		lpmmi->ptMaxTrackSize.y = pm->mmiPtMaxY;
-		break;
-
-	case ResizeDlgDirection_OnlyY:
-		lpmmi->ptMaxTrackSize.x = pm->mmiPtMaxX;
-		break;
-	}
-#endif
+	const int cGrip = SystemMetricsForDpi(SM_CXHTHUMB, pm->dpi);
+	SetWindowPos(hwndCtl, nullptr, pm->client.cx - cGrip, pm->client.cy - cGrip, cGrip, cGrip, SWP_NOZORDER);
 }
 
 HDWP DeferCtlPos(HDWP hdwp, HWND hwndDlg, int nCtlId, int dx, int dy, UINT uFlags) noexcept {
@@ -873,6 +879,15 @@ HDWP DeferCtlPos(HDWP hdwp, HWND hwndDlg, int nCtlId, int dx, int dy, UINT uFlag
 		return DeferWindowPos(hdwp, hwndCtl, nullptr, rc.left + dx, rc.top + dy, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
 	}
 	return DeferWindowPos(hdwp, hwndCtl, nullptr, 0, 0, rc.right - rc.left + dx, rc.bottom - rc.top + dy, SWP_NOZORDER | SWP_NOMOVE);
+}
+
+HDWP DeferCtlPosEx(HDWP hdwp, HWND hwndDlg, int nCtlId, int dx, int dy, int cx, int cy) noexcept {
+	HWND hwndCtl = GetDlgItem(hwndDlg, nCtlId);
+	RECT rc;
+	GetWindowRect(hwndCtl, &rc);
+	MapWindowPoints(nullptr, hwndDlg, reinterpret_cast<LPPOINT>(&rc), 2);
+	InvalidateRect(hwndCtl, nullptr, TRUE);
+	return DeferWindowPos(hdwp, hwndCtl, nullptr, rc.left + dx, rc.top + dy, rc.right - rc.left + cx, rc.bottom - rc.top + cy, SWP_NOZORDER);
 }
 
 void ResizeDlgCtl(HWND hwndDlg, int nCtlId, int dx, int dy) noexcept {
@@ -1086,7 +1101,7 @@ HMODULE LoadLocalizedResourceDLL(LANGID lang, LPCWSTR dllName) noexcept {
 	}
 
 	WCHAR path[MAX_PATH];
-	GetProgramRealPath(path, COUNTOF(path));
+	lstrcpy(path, szExeRealPath);
 	PathRemoveFileSpec(path);
 	PathAppend(path, L"locale");
 	PathAppend(path, folder);
@@ -1096,36 +1111,6 @@ HMODULE LoadLocalizedResourceDLL(LANGID lang, LPCWSTR dllName) noexcept {
 	HMODULE hDLL = LoadLibraryEx(path, nullptr, flags);
 	return hDLL;
 }
-
-#if NP2_ENABLE_TEST_LOCALIZATION_LAYOUT
-void GetLocaleDefaultUIFont(LANGID lang, LPWSTR lpFaceName, WORD *wSize) noexcept {
-	LPCWSTR font;
-	const LANGID subLang = SUBLANGID(lang);
-	// https://learn.microsoft.com/en-us/typography/fonts/windows_11_font_list
-	switch (PRIMARYLANGID(lang)) {
-	default:
-	case LANG_ENGLISH:
-		// https://docs.microsoft.com/en-us/typography/font-list/segoe-ui
-		font = L"Segoe UI";
-		break;
-	case LANG_CHINESE:
-		// https://docs.microsoft.com/en-us/typography/font-list/microsoft-yahei
-		// https://docs.microsoft.com/en-us/typography/font-list/microsoft-jhenghei
-		font = IsChineseTraditionalSubLang(subLang) ? L"Microsoft JhengHei UI" : L"Microsoft YaHei UI";
-		break;
-	case LANG_JAPANESE:
-		// https://learn.microsoft.com/en-us/typography/font-list/yu-gothic
-		font = L"Yu Gothic UI";
-		break;
-	case LANG_KOREAN:
-		// https://docs.microsoft.com/en-us/typography/font-list/malgun-gothic
-		font = L"Malgun Gothic";
-		break;
-	}
-	*wSize = 9;
-	lstrcpy(lpFaceName, font);
-}
-#endif
 #endif // NP2_ENABLE_APP_LOCALIZATION_DLL
 
 bool PathGetRealPath(HANDLE hFile, LPCWSTR lpszSrc, LPWSTR lpszDest) noexcept {
@@ -1192,35 +1177,26 @@ bool PathGetRealPath(HANDLE hFile, LPCWSTR lpszSrc, LPWSTR lpszDest) noexcept {
 //
 //  PathRelativeToApp()
 //
-void PathRelativeToApp(LPCWSTR lpszSrc, LPWSTR lpszDest, DWORD dwAttrTo, bool bUnexpandEnv, bool bUnexpandMyDocs) noexcept {
+void PathRelativeToApp(LPCWSTR lpszSrc, LPWSTR lpszDest, DWORD dwAttrTo, BOOL bUnexpandMyDocs) noexcept {
 	WCHAR wchPath[MAX_PATH];
+	WCHAR wchAppPath[MAX_PATH];
 
 	if (!PathIsRelative(lpszSrc)) {
-		WCHAR wchAppPath[MAX_PATH];
 		WCHAR wchWinDir[MAX_PATH];
 		GetModuleFileName(nullptr, wchAppPath, COUNTOF(wchAppPath));
 		PathRemoveFileSpec(wchAppPath);
 
 		if (bUnexpandMyDocs) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 			LPWSTR wchUserFiles = nullptr;
 			if (S_OK != SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &wchUserFiles)) {
 				return;
 			}
-#else
-			WCHAR wchUserFiles[MAX_PATH];
-			if (S_OK != SHGetFolderPath(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, wchUserFiles)) {
-				return;
-			}
-#endif
 			if (!PathIsPrefix(wchUserFiles, wchAppPath) && PathIsPrefix(wchUserFiles, lpszSrc)
 				&& PathRelativePathTo(wchWinDir, wchUserFiles, FILE_ATTRIBUTE_DIRECTORY, lpszSrc, dwAttrTo)) {
 				PathCombine(wchPath, L"%CSIDL:MYDOCUMENTS%", wchWinDir);
 				lpszSrc = wchPath;
 			}
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 			CoTaskMemFree(wchUserFiles);
-#endif
 		}
 		if (lpszSrc != wchPath) {
 			GetWindowsDirectory(wchWinDir, COUNTOF(wchWinDir));
@@ -1231,14 +1207,9 @@ void PathRelativeToApp(LPCWSTR lpszSrc, LPWSTR lpszDest, DWORD dwAttrTo, bool bU
 		}
 	}
 
-	if (bUnexpandEnv) {
-		if (lpszSrc == lpszDest) {
-			lstrcpyn(wchPath, lpszSrc, COUNTOF(wchPath));
-			lpszSrc = wchPath;
-		}
-		if (PathUnExpandEnvStrings(lpszSrc, lpszDest, MAX_PATH)) {
-			return;
-		}
+	LPWSTR pszPath = (lpszSrc == lpszDest) ? wchAppPath : lpszDest;
+	if (PathUnExpandEnvStrings(lpszSrc, pszPath, MAX_PATH)) {
+		lpszSrc = pszPath;
 	}
 	if (lpszSrc != lpszDest) {
 		lstrcpy(lpszDest, lpszSrc);
@@ -1249,11 +1220,10 @@ void PathRelativeToApp(LPCWSTR lpszSrc, LPWSTR lpszDest, DWORD dwAttrTo, bool bU
 //
 //  PathAbsoluteFromApp()
 //
-void PathAbsoluteFromApp(LPCWSTR lpszSrc, LPWSTR lpszDest, bool bExpandEnv) noexcept {
+void PathAbsoluteFromApp(LPCWSTR lpszSrc, LPWSTR lpszDest) noexcept {
 	WCHAR wchPath[MAX_PATH];
 
 	if (StrStartsWith(lpszSrc, L"%CSIDL:MYDOCUMENTS%")) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		if (S_OK != SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
 			return;
@@ -1264,29 +1234,27 @@ void PathAbsoluteFromApp(LPCWSTR lpszSrc, LPWSTR lpszDest, bool bExpandEnv) noex
 		}
 		PathCombine(wchPath, pszPath, lpszSrc);
 		CoTaskMemFree(pszPath);
-#else
-		if (S_OK != SHGetFolderPath(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, wchPath)) {
-			return;
-		}
-		PathAppend(wchPath, lpszSrc + CSTRLEN("%CSIDL:MYDOCUMENTS%"));
-#endif
-	} else {
-		lstrcpyn(wchPath, lpszSrc, COUNTOF(wchPath));
+		lpszSrc = wchPath;
 	}
 
-	if (bExpandEnv) {
-		ExpandEnvironmentStringsEx(wchPath, COUNTOF(wchPath));
+	WCHAR wchAppPath[MAX_PATH];
+	if (ExpandEnvironmentStringsEx(lpszSrc, wchAppPath)) {
+		lpszSrc = wchAppPath;
 	}
 
 	WCHAR wchResult[MAX_PATH];
-	lpszSrc = wchPath;
-	if (PathIsRelative(wchPath)) {
+	if (PathIsRelative(lpszSrc)) {
 		GetModuleFileName(nullptr, wchResult, COUNTOF(wchResult));
 		PathRemoveFileSpec(wchResult);
-		PathAppend(wchResult, wchPath);
+		PathAppend(wchResult, lpszSrc);
 		lpszSrc = wchResult;
 	}
-	if (!PathCanonicalize(lpszDest, lpszSrc)) {
+
+	LPWSTR pszPath = (lpszSrc == lpszDest) ? wchResult : lpszDest;
+	if (PathCanonicalize(pszPath, lpszSrc)) {
+		lpszSrc = pszPath;
+	}
+	if (lpszSrc != lpszDest) {
 		lstrcpy(lpszDest, lpszSrc);
 	}
 }
@@ -1312,7 +1280,7 @@ bool PathGetLnkPath(LPCWSTR pszLnkFile, LPWSTR pszResPath) {
 	IShellLink *psl;
 	HRESULT hr = S_FALSE;
 	WCHAR tchPath[MAX_PATH];
-	tchPath[0] = L'\0';
+	SetStrEmpty(tchPath);
 
 	if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLink, AsPPVArgs(&psl)))) {
 		IPersistFile *ppf;
@@ -1327,9 +1295,13 @@ bool PathGetLnkPath(LPCWSTR pszLnkFile, LPWSTR pszResPath) {
 	}
 
 	if (hr == S_OK && StrNotEmpty(tchPath)) {
-		ExpandEnvironmentStringsEx(tchPath, COUNTOF(tchPath));
-		if (!PathCanonicalize(pszResPath, tchPath)) {
-			lstrcpy(pszResPath, tchPath);
+		WCHAR wchResult[MAX_PATH];
+		LPCWSTR lpszSrc = tchPath;
+		if (ExpandEnvironmentStringsEx(tchPath, wchResult)) {
+			lpszSrc = wchResult;
+		}
+		if (!PathCanonicalize(pszResPath, lpszSrc)) {
+			lstrcpy(pszResPath, lpszSrc);
 		}
 		return true;
 	}
@@ -1541,20 +1513,6 @@ bool PathFixBackslashes(LPWSTR lpsz) noexcept {
 		}
 	}
 	return bFixed;
-}
-
-//=============================================================================
-//
-//  ExpandEnvironmentStringsEx()
-//
-//  Adjusted for Windows 95
-//
-void ExpandEnvironmentStringsEx(LPWSTR lpSrc, DWORD dwSrc) noexcept {
-	WCHAR szBuf[312];
-
-	if (ExpandEnvironmentStrings(lpSrc, szBuf, COUNTOF(szBuf))) {
-		lstrcpyn(lpSrc, szBuf, dwSrc);
-	}
 }
 
 //=============================================================================
@@ -1919,16 +1877,12 @@ void MRUList::Empty(bool save) noexcept {
 		pszItems[i] = nullptr;
 	}
 	iSize = 0;
-	if (save && StrNotEmpty(szIniFile)) {
+	if (save) {
 		IniClearSection(szRegKey);
 	}
 }
 
 void MRUList::Load() noexcept {
-	if (StrIsEmpty(szIniFile)) {
-		return;
-	}
-
 	IniSectionParser section;
 	WCHAR *pIniSectionBuf = static_cast<WCHAR *>(NP2HeapAlloc(sizeof(WCHAR) * MAX_INI_SECTION_SIZE_MRU));
 	const DWORD cchIniSection = static_cast<DWORD>(NP2HeapSize(pIniSectionBuf) / sizeof(WCHAR));
@@ -1951,9 +1905,6 @@ void MRUList::Load() noexcept {
 }
 
 void MRUList::Save() const noexcept {
-	if (StrIsEmpty(szIniFile)) {
-		return;
-	}
 	if (iSize <= 0) {
 		IniClearSection(szRegKey);
 		return;
@@ -1987,61 +1938,6 @@ void MRUList::AddToCombobox(HWND hwnd) const noexcept {
   Modify dialog templates to use current theme font
   Based on code of MFC helper class CDialogTemplate
 */
-bool GetThemedDialogFont(LPWSTR lpFaceName, WORD *wSize) noexcept {
-#if NP2_ENABLE_APP_LOCALIZATION_DLL && NP2_ENABLE_TEST_LOCALIZATION_LAYOUT
-	extern LANGID uiLanguage;
-	GetLocaleDefaultUIFont(uiLanguage, lpFaceName, wSize);
-	return true;
-#else
-
-	bool bSucceed = false;
-	int lfHeight = 0;
-
-	if (IsAppThemed()) {
-		HTHEME hTheme = OpenThemeData(nullptr, L"WINDOWSTYLE;WINDOW");
-		if (hTheme) {
-			LOGFONT lf;
-			if (S_OK == GetThemeSysFont(hTheme, TMT_MSGBOXFONT, &lf)) {
-				lfHeight = lf.lfHeight;
-				lstrcpyn(lpFaceName, lf.lfFaceName, LF_FACESIZE);
-				bSucceed = true;
-			}
-			CloseThemeData(hTheme);
-		}
-	}
-
-	if (!bSucceed) {
-		NONCLIENTMETRICS ncm;
-		memset(&ncm, 0, sizeof(ncm));
-		ncm.cbSize = sizeof(NONCLIENTMETRICS);
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
-		if (!IsVistaAndAbove()) {
-			ncm.cbSize -= sizeof(ncm.iPaddedBorderWidth);
-		}
-#endif
-		if (SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0)) {
-			lfHeight = ncm.lfMessageFont.lfHeight;
-			lstrcpyn(lpFaceName, ncm.lfMessageFont.lfFaceName, LF_FACESIZE);
-			bSucceed = true;
-		}
-	}
-
-	if (bSucceed) {
-		if (lfHeight < 0) {
-			lfHeight = -lfHeight;
-		}
-		lfHeight = MulDiv(lfHeight, 72, g_uSystemDPI);
-		lfHeight = max(lfHeight, 8);
-		*wSize = static_cast<WORD>(lfHeight);
-		if (!IsVistaAndAbove()) {
-			// Windows 2000, XP, 2003
-			lstrcpy(lpFaceName, L"Tahoma");
-		}
-	}
-	return bSucceed;
-#endif
-}
-
 namespace {
 
 // https://learn.microsoft.com/en-us/windows/win32/dlgbox/dlgtemplateex
@@ -2110,7 +2006,7 @@ DLGTEMPLATE *LoadThemedDialogTemplate(LPCWSTR lpDialogTemplateID, HINSTANCE hIns
 	const DLGTEMPLATE *pRsrcMem = static_cast<DLGTEMPLATE *>(LockResource(hRsrcMem));
 	const DWORD dwTemplateSize = SizeofResource(hInstance, hRsrc);
 
-	DLGTEMPLATE *pTemplate = dwTemplateSize ? static_cast<DLGTEMPLATE *>(NP2HeapAlloc(dwTemplateSize + LF_FACESIZE*sizeof(WCHAR))) : nullptr;
+	DLGTEMPLATE *pTemplate = dwTemplateSize ? static_cast<DLGTEMPLATE *>(NP2HeapAlloc(dwTemplateSize + LF_FACESIZE*sizeof(WCHAR) + sizeof(DWORD))) : nullptr;
 	if (pTemplate == nullptr) {
 		FreeResource(hRsrcMem);
 		return nullptr;
@@ -2119,24 +2015,52 @@ DLGTEMPLATE *LoadThemedDialogTemplate(LPCWSTR lpDialogTemplateID, HINSTANCE hIns
 	memcpy(reinterpret_cast<BYTE *>(pTemplate), pRsrcMem, dwTemplateSize);
 	FreeResource(hRsrcMem);
 
-	WCHAR wchFaceName[LF_FACESIZE];
-	WORD wFontSize;
-	if (!GetThemedDialogFont(wchFaceName, &wFontSize)) {
+#if NP2_ENABLE_APP_LOCALIZATION_DLL && NP2_ENABLE_TEST_LOCALIZATION_LAYOUT
+	extern LANGID uiLanguage;
+	LPCWSTR lfFaceName;
+	constexpr WORD wFontSize = 9;
+	const LANGID subLang = SUBLANGID(lang);
+	// https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/typography#fonts-for-non-latin-languages
+	// https://learn.microsoft.com/en-us/globalization/fonts-layout/font-support
+	switch (PRIMARYLANGID(lang)) {
+	default:
+	case LANG_ENGLISH:
+		// Segoe UI or Segoe UI Variable
+		return pTemplate;
+	case LANG_CHINESE:
+		lfFaceName = IsChineseTraditionalSubLang(subLang) ? L"Microsoft JhengHei UI" : L"Microsoft YaHei UI";
+		break;
+	case LANG_JAPANESE:
+		lfFaceName = L"Yu Gothic UI";
+		break;
+	case LANG_KOREAN:
+		lfFaceName = L"Malgun Gothic";
+		break;
+	}
+
+#else
+	// https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getstockobject
+	NONCLIENTMETRICS ncm;
+	ncm.cbSize = sizeof(NONCLIENTMETRICS);
+	if (!SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0)) {
 		return pTemplate;
 	}
+	int lfHeight = ncm.lfMessageFont.lfHeight;
+	if (lfHeight < 0) {
+		lfHeight = -lfHeight;
+	}
+	lfHeight = MulDiv(lfHeight, 72, g_uSystemDPI);
+	lfHeight = max(lfHeight, 9);
+	const WORD wFontSize = static_cast<WORD>(lfHeight);
+	LPCWSTR lfFaceName = ncm.lfMessageFont.lfFaceName;
+#endif // NP2_ENABLE_TEST_LOCALIZATION_LAYOUT
 
 	const bool bDialogEx = DialogTemplate_IsDialogEx(pTemplate);
 	const BOOL bHasFont = DialogTemplate_HasFont(pTemplate, bDialogEx);
 	const DWORD cbFontAttr = DialogTemplate_FontAttrSize(bDialogEx);
 
-	if (bDialogEx) {
-		(reinterpret_cast<DLGTEMPLATEEX *>(pTemplate))->style |= DS_SHELLFONT;
-	} else {
-		pTemplate->style |= DS_SHELLFONT;
-	}
-
-	const DWORD cbNew = cbFontAttr + ((lstrlen(wchFaceName) + 1) * sizeof(WCHAR));
-	const BYTE *pbNew = reinterpret_cast<BYTE *>(wchFaceName);
+	const DWORD cbNew = cbFontAttr + ((lstrlen(lfFaceName) + 1) * sizeof(WCHAR));
+	const BYTE *pbNew = reinterpret_cast<const BYTE *>(lfFaceName);
 
 	BYTE *pb = DialogTemplate_GetFontSizeField(pTemplate, bDialogEx);
 	const DWORD cbOld = bHasFont ? cbFontAttr + sizeof(WCHAR) * (lstrlen(reinterpret_cast<WCHAR *>(pb + cbFontAttr)) + 1) : 0;
@@ -2158,10 +2082,7 @@ DLGTEMPLATE *LoadThemedDialogTemplate(LPCWSTR lpDialogTemplateID, HINSTANCE hIns
 INT_PTR ThemedDialogBoxParam(HINSTANCE hInstance, LPCWSTR lpTemplate, HWND hWndParent, DLGPROC lpDialogFunc, LPARAM dwInitParam) noexcept {
 	DLGTEMPLATE *pDlgTemplate = LoadThemedDialogTemplate(lpTemplate, hInstance);
 	const INT_PTR ret = DialogBoxIndirectParam(hInstance, pDlgTemplate, hWndParent, lpDialogFunc, dwInitParam);
-	if (pDlgTemplate) {
-		NP2HeapFree(pDlgTemplate);
-	}
-
+	NP2HeapFree(pDlgTemplate);
 	return ret;
 }
 

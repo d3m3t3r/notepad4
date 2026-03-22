@@ -438,11 +438,14 @@ public:
 	void SCICALL MeasureWidthsUTF8(const Font *font_, std::string_view text, XYPOSITION *positions) override;
 	XYPOSITION WidthTextUTF8(const Font *font_, std::string_view text) override;
 
+	/*
 	XYPOSITION Ascent(const Font *font_) noexcept override;
 	XYPOSITION Descent(const Font *font_) noexcept override;
 	XYPOSITION InternalLeading(const Font *font_) noexcept override;
 	XYPOSITION Height(const Font *font_) noexcept override;
-	XYPOSITION AverageCharWidth(const Font *font_) override;
+	*/
+	FontMetrics Metrics(const Font *font_) noexcept override;
+	//XYPOSITION AverageCharWidth(const Font *font_) override;
 
 	void SCICALL SetClip(PRectangle rc) noexcept override;
 	void PopClip() noexcept override;
@@ -1622,6 +1625,7 @@ XYPOSITION SurfaceD2D::WidthTextUTF8(const Font * font_, std::string_view text) 
 	return width;
 }
 
+/*
 XYPOSITION SurfaceD2D::Ascent(const Font *font_) noexcept {
 	const FontDirectWrite *pfm = down_cast<const FontDirectWrite *>(font_);
 	return std::ceil(pfm->yAscent);
@@ -1641,7 +1645,21 @@ XYPOSITION SurfaceD2D::Height(const Font *font_) noexcept {
 	const FontDirectWrite *pfm = down_cast<const FontDirectWrite *>(font_);
 	return std::ceil(pfm->yAscent) + std::ceil(pfm->yDescent);
 }
+*/
 
+FontMetrics SurfaceD2D::Metrics(const Font *font_) noexcept {
+	const FontDirectWrite *pfm = down_cast<const FontDirectWrite *>(font_);
+	const XYPOSITION yAscent = std::ceil(pfm->yAscent);
+	const XYPOSITION yDescent = std::ceil(pfm->yDescent);
+	return {
+		yAscent,
+		yDescent,
+		std::floor(pfm->yInternalLeading),
+		yAscent + yDescent,
+	};
+}
+
+/*
 XYPOSITION SurfaceD2D::AverageCharWidth(const Font *font_) {
 	FLOAT width = 1.0;
 	const FontDirectWrite *pfm = down_cast<const FontDirectWrite *>(font_);
@@ -1651,11 +1669,12 @@ XYPOSITION SurfaceD2D::AverageCharWidth(const Font *font_) {
 		if (const TextLayout pTextLayout = LayoutCreate(wsvAllAlpha, pfm->pTextFormat.Get())) {
 			DWRITE_TEXT_METRICS textMetrics;
 			if (SUCCEEDED(pTextLayout->GetMetrics(&textMetrics)))
-				width = textMetrics.width / wsvAllAlpha.length();
+				width = textMetrics.width*(1.0f / wsvAllAlpha.length());
 		}
 	}
 	return width;
 }
+*/
 
 void SurfaceD2D::SetClip(PRectangle rc) noexcept {
 	if (pRenderTarget) {

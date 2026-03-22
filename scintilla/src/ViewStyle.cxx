@@ -36,6 +36,7 @@
 #include "LineMarker.h"
 #include "Style.h"
 #include "ViewStyle.h"
+//#include "ElapsedPeriod.h"
 
 using namespace Scintilla;
 using namespace Scintilla::Internal;
@@ -50,6 +51,8 @@ constexpr unsigned int mid = 0x80U;
 constexpr unsigned int half = 0x7fU;
 constexpr unsigned int quarter = 0x3fU;
 
+constexpr int startExtendedStyles = 0x100;
+
 }
 
 void FontRealised::Realise(Surface &surface, int zoomLevel, Technology technology, const FontSpecification &fs, const char *localeName) {
@@ -63,30 +66,91 @@ void FontRealised::Realise(Surface &surface, int zoomLevel, Technology technolog
 	// floor here is historical as platform layers have tweaked their values to match.
 	// ceil would likely be better to ensure (nearly) all of the ink of a character is seen
 	// but that would require platform layer changes.
-	measurements.ascent = surface.Ascent(font.get());
-	measurements.descent = surface.Descent(font.get());
-	measurements.capitalHeight = surface.Ascent(font.get()) - surface.InternalLeading(font.get());
-	measurements.aveCharWidth = surface.AverageCharWidth(font.get());
-	//measurements.monospaceCharacterWidth = measurements.aveCharWidth;
+	const FontMetrics metrics = surface.Metrics(font.get());
+	measurements.ascent = metrics.ascent;
+	measurements.descent = metrics.descent;
+	measurements.capitalHeight = metrics.ascent - metrics.internalLeading;
+	//measurements.aveCharWidth = surface.AverageCharWidth(font.get());
 	measurements.spaceWidth = surface.WidthText(font.get(), " ");
 
-	if (fs.checkMonospaced) {
+	/*if (fs.checkMonospaced)*/ {
 		// "Ay" is normally strongly kerned and "fi" may be a ligature
 		constexpr std::string_view allASCIIGraphic("Ayfi"
 		// python: ''.join(chr(ch) for ch in range(32, 127))
-		" !\"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~");
+		" !\"#$%&\'()*+,-./0123456789:;<=>?@[\\]^_`{|}~abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
 		std::array<XYPOSITION, allASCIIGraphic.length()> positions {};
 		surface.MeasureWidthsUTF8(font.get(), allASCIIGraphic, positions.data());
+
+		constexpr size_t tilde = allASCIIGraphic.length() - 53;
+		static_assert(allASCIIGraphic[tilde] == '~');
+		XYPOSITION aveCharWidth = (positions.back() - positions[tilde]) * (1.0 / 52);
+		if (technology == Technology::Default/*!surface.SupportsFeature(Supports::FractionalStrokeWidth)*/) {
+			aveCharWidth = std::round(aveCharWidth);
+		}
+		measurements.aveCharWidth = aveCharWidth;
+
+		// const ElapsedPeriod period;
+#if NP2_USE_SSE2
+		static_assert(positions.size() & true);
+		const double *it = positions.data();
+		const double * const end = it + positions.size();
+#if NP2_USE_AVX2
+		__m128d prev = _mm_loaddup_pd(it);
+#else
+		__m128d prev = _mm_set1_pd(*it);
+#endif
+		__m128d mmMaxWidth = prev;
+		__m128d mmMinWidth = prev;
+		++it;
+#if defined(__clang__)
+		#pragma clang loop unroll(disable)
+#elif defined(__GNUC__)
+		#pragma GCC unroll 0
+#endif
+		while (it != end) {
+			const __m128d current = _mm_loadu_pd(it);
+			__m128d value  = _mm_shuffle_pd(prev, current, 0b01);
+			prev = current;
+			value = _mm_sub_pd(current, value);
+			mmMaxWidth = _mm_max_pd(mmMaxWidth, value);
+			mmMinWidth = _mm_min_pd(mmMinWidth, value);
+			it += 2;
+		}
+		mmMaxWidth = _mm_max_sd(mmMaxWidth, _mm_unpackhi_pd(mmMaxWidth, mmMaxWidth));
+		mmMinWidth = _mm_min_sd(mmMinWidth, _mm_unpackhi_pd(mmMinWidth, mmMinWidth));
+		const XYPOSITION maxWidth = _mm_cvtsd_f64(mmMaxWidth);
+		const XYPOSITION minWidth = _mm_cvtsd_f64(mmMinWidth);
+		// end NP2_USE_SSE2
+#elif 1
+		auto it = positions.begin();
+		XYPOSITION prev = *it;
+		XYPOSITION maxWidth = prev;
+		XYPOSITION minWidth = prev;
+		while (++it != positions.end()) {
+			const XYPOSITION current = *it;
+			const XYPOSITION value = current - prev;
+			prev = current;
+			maxWidth = std::max(maxWidth, value);
+			minWidth = std::min(minWidth, value);
+		}
+#elif 0
+		std::adjacent_difference(positions.begin(), positions.end(), positions.begin());
+		const auto [minIt, maxIt] = std::minmax_element(positions.begin(), positions.end());
+		const XYPOSITION maxWidth = *maxIt;
+		const XYPOSITION minWidth = *minIt;
+#else
 		std::adjacent_difference(positions.begin(), positions.end(), positions.begin());
 		const XYPOSITION maxWidth = *std::max_element(positions.begin(), positions.end());
 		const XYPOSITION minWidth = *std::min_element(positions.begin(), positions.end());
+#endif
+		// const double duration = period.Duration()*1e3;
+		// printf("%4d:%s duration=%.6f, max=%f, min=%f\n", fs.size, fs.fontName, duration, maxWidth, minWidth);
 		const XYPOSITION variance = maxWidth - minWidth;
-		const XYPOSITION scaledVariance = variance / measurements.aveCharWidth;
 		constexpr XYPOSITION monospaceWidthEpsilon = 0.000001;	// May need tweaking if monospace fonts vary more
-		measurements.monospaceASCII = scaledVariance < monospaceWidthEpsilon;
+		const XYPOSITION scaledVariance = monospaceWidthEpsilon * minWidth;
+		//printf("%4d:%s max=%f, min=%f, avg=%f, variance=%f, %f\n", fs.size, fs.fontName, maxWidth, minWidth, measurements.aveCharWidth, variance, scaledVariance);
+		measurements.monospaceASCII = variance < scaledVariance;
 		//measurements.monospaceCharacterWidth = minWidth;
-	} else {
-		measurements.monospaceASCII = false;
 	}
 }
 
@@ -99,6 +163,8 @@ ViewStyle::ViewStyle(size_t stylesSize_):
 	elementBaseColours(static_cast<size_t>(Element::Max)) {
 
 	ResetDefaultStyle();
+	static_assert(sizeof(Style) == 128);
+	//printf("FontSpecification=%zu, FontMeasurements=%zu, StylePod=%zu, Style=%zu\n", sizeof(FontSpecification), sizeof(FontMeasurements), sizeof(StylePod), sizeof(Style));
 
 	indicators[0] = Indicator(IndicatorStyle::Squiggle, ColourRGBA(0, half, 0));	// Green
 	indicators[1] = Indicator(IndicatorStyle::TT, ColourRGBA(0, 0, maximumByte));	// Blue
@@ -151,7 +217,7 @@ ViewStyle::ViewStyle(size_t stylesSize_):
 	markers[indexHistoryRevertedToModified].fore = revertedToChange;
 	markers[indexHistoryRevertedToModified].markType = MarkerSymbol::Bar;
 
-	nextExtendedStyle = 256;
+	nextExtendedStyle = startExtendedStyles;
 	// There are no image markers by default, so no need for calling CalcLargestMarkerHeight()
 	largestMarkerHeight = 0;
 
@@ -162,9 +228,11 @@ ViewStyle::ViewStyle(size_t stylesSize_):
 	lineOverlap = 0;
 	maxAscent = 1;
 	maxDescent = 1;
-	aveCharWidth = 8;
-	spaceWidth = 8;
-	tabWidth = spaceWidth * 8;
+	constexpr XYPOSITION defaultWidthChar = 8.0;	// Reasonable initial approximation
+	aveCharWidth = defaultWidthChar;
+	spaceWidth = defaultWidthChar;
+	constexpr int defaultTabSpaces = 8;
+	tabWidth = spaceWidth * defaultTabSpaces;
 
 	// Default is for no selection foregrounds
 	elementColoursMask = 0;
@@ -196,7 +264,8 @@ ViewStyle::ViewStyle(size_t stylesSize_):
 	leftMarginWidth = 1;
 	rightMarginWidth = 1;
 	ms[0] = MarginStyle(MarginType::Number);
-	ms[1] = MarginStyle(MarginType::Symbol, 16, ~MaskFolders);
+	constexpr int widthMarks = 16;
+	ms[1] = MarginStyle(MarginType::Symbol, widthMarks, ~MaskFolders);
 	ms[2] = MarginStyle(MarginType::Symbol);
 	CalculateMarginWidthAndMask();
 	textStart = marginInside ? fixedColumnWidth : leftMarginWidth;
@@ -315,7 +384,7 @@ ViewStyle::~ViewStyle() = default;
 
 void ViewStyle::CalculateMarginWidthAndMask() noexcept {
 	fixedColumnWidth = marginInside ? leftMarginWidth : 0;
-	maskInLine = 0xffffffffU;
+	maskInLine = UINT32_MAX;
 	MarkerMask maskDefinedMarkers = 0;
 	for (const MarginStyle &m : ms) {
 		fixedColumnWidth += m.width;
@@ -396,7 +465,9 @@ void ViewStyle::Refresh(Surface &surface, int tabInChars) {
 	maxAscent = std::max(1.0, maxAscent + extraAscent);
 	maxDescent = std::max(0.0, maxDescent + extraDescent);
 	lineHeight = static_cast<int>(std::lround(maxAscent + maxDescent));
-	lineOverlap = std::clamp(lineHeight / 10, 2, lineHeight);
+	// lineHeight may rarely be less than 2, so can't use std::clamp()
+	constexpr int overlapFraction = 10;	// Allow up to a tenth of a line overlap
+	lineOverlap = std::min(std::max(lineHeight / overlapFraction, 2), lineHeight);
 
 	bool flagProtected = false;
 	constexpr bool flagForceCase = false;
@@ -415,7 +486,7 @@ void ViewStyle::Refresh(Surface &surface, int tabInChars) {
 	tabWidth = aveCharWidth * tabInChars;
 
 	controlCharWidth = 0.0;
-	if (controlCharSymbol >= 32) {
+	if (controlCharSymbol >= ' ') {
 		const char cc[2] = { static_cast<char>(controlCharSymbol), '\0' };
 		controlCharWidth = surface.WidthText(styles[StyleControlChar].font.get(), cc);
 	}
@@ -425,7 +496,7 @@ void ViewStyle::Refresh(Surface &surface, int tabInChars) {
 }
 
 void ViewStyle::ReleaseAllExtendedStyles() noexcept {
-	nextExtendedStyle = 256;
+	nextExtendedStyle = startExtendedStyles;
 }
 
 int ViewStyle::AllocateExtendedStyles(int numberStyles) {
@@ -586,9 +657,8 @@ ColourOptional ViewStyle::Background(MarkerMask marksOfLine, bool caretActive, b
 	}
 	if (background) {
 		return background->Opaque();
-	} else {
-		return {};
 	}
+	return {};
 }
 
 bool ViewStyle::SelectionBackgroundDrawn() const noexcept {
@@ -816,12 +886,8 @@ void ViewStyle::FindMaxAscentDescent() noexcept {
 			index++;
 			continue;
 		}
-		if (ascent < style.ascent) {
-			ascent = style.ascent;
-		}
-		if (descent < style.descent) {
-			descent = style.descent;
-		}
+		ascent = std::max(ascent, style.ascent);
+		descent = std::max(descent, style.descent);
 		index++;
 	}
 	maxFontAscent = ascent;

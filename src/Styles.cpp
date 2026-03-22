@@ -346,10 +346,6 @@ int		iCaretBlinkPeriod = -1; // system default, 0 for noblink
 static bool bBookmarkColorUpdated;
 static int	iDefaultLexerIndex;
 static bool bAutoSelect;
-int		cxStyleSelectDlg;
-int		cyStyleSelectDlg;
-int		cxStyleCustomizeDlg;
-int		cyStyleCustomizeDlg;
 
 #define ALL_FILE_EXTENSIONS_BYTE_SIZE	((MATCH_LEXER_COUNT * MAX_EDITLEXER_EXT_SIZE) * sizeof(WCHAR))
 static LPWSTR g_AllFileExtensions = nullptr;
@@ -537,8 +533,13 @@ static inline void FindSystemDefaultCodeFont() noexcept {
 }
 
 static inline void FindSystemDefaultTextFont() noexcept {
-	WORD wSize;
-	GetThemedDialogFont(systemTextFontName, &wSize);
+	NONCLIENTMETRICS ncm;
+	ncm.cbSize = sizeof(NONCLIENTMETRICS);
+	LPCWSTR fontName = L"Segoe UI";
+	if (SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0)) {
+		fontName = ncm.lfMessageFont.lfFaceName;
+	}
+	lstrcpy(systemTextFontName, fontName);
 }
 
 void Style_DetectBaseFontSize(HMONITOR hMonitor) noexcept {
@@ -583,8 +584,7 @@ void Style_DetectBaseFontSize(HMONITOR hMonitor) noexcept {
 }
 
 HFONT Style_CreateCodeFont(UINT dpi) noexcept {
-	const int size = SciCall_StyleGetSizeFractional(STYLE_DEFAULT);
-	const int height = -MulDiv(size, dpi, 72*SC_FONT_SIZE_MULTIPLIER);
+	const int height = -MulDiv(iBaseFontSize, dpi, 72*SC_FONT_SIZE_MULTIPLIER);
 	HFONT font = CreateFont(height,
 						0, 0, 0,
 						FW_NORMAL,
@@ -616,8 +616,10 @@ static inline LPCWSTR GetStyleThemeFilePath() noexcept {
 	return (np2StyleTheme == StyleTheme_Dark) ? darkStyleThemeFilePath : szIniFile;
 }
 
-static inline void FindDarkThemeFile() noexcept {
-	FindExtraIniFile(darkStyleThemeFilePath, L"Notepad4 DarkTheme.ini", L"DarkTheme.ini");
+static inline void FindDarkThemeFile(LPWSTR lpszIniFile) noexcept {
+	// relative to program ini file
+	lstrcpy(lpszIniFile, szIniFile);
+	lstrcpy(PathFindFileName(lpszIniFile), L"Notepad4 DarkTheme.ini");
 }
 
 void Style_LoadTabSettings(LPCEDITLEXER pLex) noexcept {
@@ -796,7 +798,7 @@ void Style_Load() noexcept {
 	}
 
 	if (np2StyleTheme == StyleTheme_Dark) {
-		FindDarkThemeFile();
+		FindDarkThemeFile(darkStyleThemeFilePath);
 	}
 
 	Style_LoadOneEx(&lexGlobal, section, pIniSectionBuf, cchIniSection);
@@ -1179,8 +1181,8 @@ void Style_OnStyleThemeChanged(int theme) noexcept {
 		return;
 	}
 	if (theme != StyleTheme_Default) {
-		if (!PathIsFile(darkStyleThemeFilePath)) {
-			FindDarkThemeFile();
+		if (StrIsEmpty(darkStyleThemeFilePath)) {
+			FindDarkThemeFile(darkStyleThemeFilePath);
 		}
 	}
 
@@ -1218,8 +1220,10 @@ void Style_UpdateCaret() noexcept {
 
 static inline bool IsCJKLocale(LPCWSTR locale) noexcept {
 	const UINT lang = (*reinterpret_cast<const UINT *>(locale)) | 0x00200020;
-	// zh, ja, ko
-	return lang == 0x0068007A || lang == 0x0061006A || lang == 0x006F006B;
+	constexpr DWORD zh = MAKELONG('z', 'h');
+	constexpr DWORD ja = MAKELONG('j', 'a');
+	constexpr DWORD ko = MAKELONG('k', 'o');
+	return lang == zh || lang == ja || lang == ko;
 }
 
 static void Style_SetFontLocaleName(LPCWSTR lpszStyle) noexcept {
@@ -1543,7 +1547,6 @@ void Style_SetLexer(PEDITLEXER pLexNew, BOOL bLexerChanged) noexcept {
 	// Default Values are always set
 	SciCall_StyleResetDefault();
 	SciCall_StyleSetCharacterSet(STYLE_DEFAULT, DEFAULT_CHARSET);
-	SciCall_StyleSetCheckMonospaced(STYLE_DEFAULT, true);
 
 	//! begin STYLE_DEFAULT
 	LPCWSTR szValue = lexGlobal.Styles[GlobalStyleIndex_DefaultCode].szValue;
@@ -2807,67 +2810,6 @@ bool Style_CanOpenFile(LPCWSTR lpszFile) noexcept {
 	np2LexLangIndex = lang;
 	return pLexNew != nullptr || StrIsEmpty(lpszExt) || bDotFile || StrCaseEqual(lpszExt, L"cgi") || StrCaseEqual(lpszExt, L"fcgi");
 }
-
-
-#if 0
-bool Style_MaybeBinaryFile(LPCWSTR lpszFile) noexcept {
-	uint8_t buf[5]{}; // file magic
-	SciCall_GetText(COUNTOF(buf) - 1, buf);
-	const UINT magic2 = (buf[0] << 8) | buf[1];
-	if (magic2 == 0x4D5AU ||	// PE (exe, dll, etc.): MZ
-		magic2 == 0x504BU ||	// ZIP (zip, jar, docx, apk, etc.): PK
-		magic2 == 0x377AU ||	// 7z: 7z
-		magic2 == 0x1F8BU ||	// gzip (gz, gzip, svgz, etc.)
-		magic2 == 0x424DU ||	// BMP: BM
-		magic2 == 0xFFD8U		// JPEG (jpg, jpeg, etc.)
-		) {
-		return true;
-	}
-
-	const UINT magic = (magic2 << 16) | (buf[2] << 8) | buf[3];
-	if (magic == 0x89504E47U ||	// PNG: 0x89+PNG
-		magic == 0x47494638U ||	// GIF: GIF89a
-		magic == 0x25504446U ||	// PDF: %PDF-{version}
-		magic == 0x52617221U ||	// RAR: Rar!
-		magic == 0x7F454C46U ||	// ELF: 0x7F+ELF
-		magic == 0x213C6172U ||	// .lib, .a: !<arch>\n
-		magic == 0xFD377A58U ||	// xz: 0xFD+7zXZ
-		magic == 0xCAFEBABEU	// Java class
-		) {
-		return true;
-	}
-
-	LPCWSTR lpszExt = PathFindExtension(lpszFile);
-	if (StrNotEmpty(lpszExt)) {
-		++lpszExt;
-		const int len = lstrlen(lpszExt);
-		if (len < 3 || len > 5) {
-			return false;
-		}
-		// full match
-		WCHAR wch[8] = L"";
-		wch[0] = L' ';
-		lstrcpy(wch + 1, lpszExt);
-		wch[len + 1] = L' ';
-		LPCWSTR lpszMatch = StrStrI(
-			L" cur"		// Cursor
-			L" ico"		// Icon
-
-			L" obj"
-			L" pdb"
-			L" bin"
-			L" pak"		// Chrome
-
-			L" dmg"		// macOS
-			L" img"
-			L" iso"
-			L" tar"
-			L" ", wch);
-		return lpszMatch != nullptr;
-	}
-	return false;
-}
-#endif
 
 void Style_SetLexerByLangIndex(int lang) noexcept {
 	const int langIndex = np2LexLangIndex;
@@ -4252,7 +4194,7 @@ static INT_PTR CALLBACK Style_ConfigDlgProc(HWND hwnd, UINT umsg, WPARAM wParam,
 
 	switch (umsg) {
 	case WM_INITDIALOG: {
-		ResizeDlg_InitY2(hwnd, cxStyleCustomizeDlg, cyStyleCustomizeDlg, IDC_RESIZEGRIP3, IDC_STYLEEDIT, IDC_STYLEVALUE_DEFAULT);
+		ResizeDlg_InitY2(hwnd, &positionRecord.cxStyleCustomizeDlg, &positionRecord.cyStyleCustomizeDlg, IDC_RESIZEGRIP3, IDC_STYLEEDIT, IDC_STYLEVALUE_DEFAULT);
 
 		WCHAR szTitle[1024];
 		const UINT idsTitle = (np2StyleTheme == StyleTheme_Dark) ? IDS_CONFIG_THEME_TITLE_DARK : IDS_CONFIG_THEME_TITLE_DEFAULT;
@@ -4279,10 +4221,7 @@ static INT_PTR CALLBACK Style_ConfigDlgProc(HWND hwnd, UINT umsg, WPARAM wParam,
 		MakeBitmapButton(hwnd, IDC_NEXTSTYLE, g_exeInstance, IDB_NEXT16);
 
 		// Setup title font
-		HFONT hFontTitle = AsPointer<HFONT>(SendDlgItemMessage(hwnd, IDC_TITLE, WM_GETFONT, 0, 0));
-		if (hFontTitle == nullptr) {
-			hFontTitle = GetStockFont(DEFAULT_GUI_FONT);
-		}
+		HFONT hFontTitle = GetWindowFont(hwnd);
 		LOGFONT lf;
 		GetObject(hFontTitle, sizeof(LOGFONT), &lf);
 		lf.lfHeight += lf.lfHeight / 5;
@@ -4302,15 +4241,12 @@ static INT_PTR CALLBACK Style_ConfigDlgProc(HWND hwnd, UINT umsg, WPARAM wParam,
 		DeleteBitmapButton(hwnd, IDC_STYLEBACK);
 		DeleteBitmapButton(hwnd, IDC_PREVSTYLE);
 		DeleteBitmapButton(hwnd, IDC_NEXTSTYLE);
-		ResizeDlg_Destroy(hwnd, &cxStyleCustomizeDlg, &cyStyleCustomizeDlg);
 	}
 	return FALSE;
 
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		const int cy = ResizeDlg_CalcDeltaY2(hwnd, dy, 50, IDC_STYLEEDIT, IDC_STYLEVALUE_DEFAULT);
 		HDWP hdwp = BeginDeferWindowPos(19);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP3, dx, dy, SWP_NOSIZE);
@@ -4321,7 +4257,7 @@ static INT_PTR CALLBACK Style_ConfigDlgProc(HWND hwnd, UINT umsg, WPARAM wParam,
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEEDIT_HELP, dx, 0, SWP_NOMOVE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEEDIT, dx, cy, SWP_NOMOVE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLELABEL_DEFAULT, 0, cy, SWP_NOSIZE);
-		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEVALUE_DEFAULT, 0, cy, SWP_NOSIZE);
+		hdwp = DeferCtlPosEx(hdwp, hwnd, IDC_STYLEVALUE_DEFAULT, 0, cy, dx, dy - cy);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEFORE, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEBACK, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_STYLEFONT, dx, dy, SWP_NOSIZE);
@@ -4333,13 +4269,8 @@ static INT_PTR CALLBACK Style_ConfigDlgProc(HWND hwnd, UINT umsg, WPARAM wParam,
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_EXPORT, 0, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESETALL, 0, dy, SWP_NOSIZE);
 		EndDeferWindowPos(hdwp);
-		ResizeDlgCtl(hwnd, IDC_STYLEVALUE_DEFAULT, dx, dy - cy);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY:
 		if (AsPointer<LPNMHDR>(lParam)->idFrom == IDC_STYLELIST) {
@@ -5078,7 +5009,7 @@ static INT_PTR CALLBACK Style_SelectLexerDlgProc(HWND hwnd, UINT umsg, WPARAM wP
 	switch (umsg) {
 	case WM_INITDIALOG: {
 		SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-		ResizeDlg_Init(hwnd, cxStyleSelectDlg, cyStyleSelectDlg, IDC_RESIZEGRIP3);
+		ResizeDlg_Init(hwnd, &positionRecord.cxStyleSelectDlg, &positionRecord.cyStyleSelectDlg, IDC_RESIZEGRIP3);
 
 		const bool favorite = lParam != 0;
 		if (favorite) {
@@ -5112,15 +5043,9 @@ static INT_PTR CALLBACK Style_SelectLexerDlgProc(HWND hwnd, UINT umsg, WPARAM wP
 	}
 	return TRUE;
 
-	case WM_DESTROY:
-		ResizeDlg_Destroy(hwnd, &cxStyleSelectDlg, &cyStyleSelectDlg);
-		return FALSE;
-
 	case WM_SIZE: {
-		int dx;
-		int dy;
-
-		ResizeDlg_Size(hwnd, lParam, &dx, &dy);
+		const int dx = GET_X_LPARAM(lParam);
+		const int dy = GET_Y_LPARAM(lParam);
 		HDWP hdwp = BeginDeferWindowPos(6);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDC_RESIZEGRIP3, dx, dy, SWP_NOSIZE);
 		hdwp = DeferCtlPos(hdwp, hwnd, IDOK, dx, dy, SWP_NOSIZE);
@@ -5131,10 +5056,6 @@ static INT_PTR CALLBACK Style_SelectLexerDlgProc(HWND hwnd, UINT umsg, WPARAM wP
 		EndDeferWindowPos(hdwp);
 	}
 	return TRUE;
-
-	case WM_GETMINMAXINFO:
-		ResizeDlg_GetMinMaxInfo(hwnd, lParam);
-		return TRUE;
 
 	case WM_NOTIFY:
 		if (AsPointer<LPNMHDR>(lParam)->idFrom == IDC_STYLELIST) {

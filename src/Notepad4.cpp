@@ -106,13 +106,13 @@ static TBBUTTON tbbMainWnd[] = {
 	{26, 	IDT_FILE_NEWWINDOW, 	TBSTATE_ENABLED, TBSTYLE_BUTTON, {0}, 0, 0},
 };
 
-WCHAR	szIniFile[MAX_PATH] = L"";
-static WCHAR szIniFile2[MAX_PATH] = L"";
+WCHAR	szIniFile[MAX_PATH];
+WCHAR szExeRealPath[MAX_PATH];
 static bool bSaveSettings;
 bool	bSaveRecentFiles;
 int iMaxRecentFiles;
 static bool bSaveFindReplace;
-static WCHAR tchLastSaveCopyDir[MAX_PATH] = L"";
+static WCHAR tchLastSaveCopyDir[MAX_PATH];
 WCHAR	tchOpenWithDir[MAX_PATH];
 WCHAR	tchFavoritesDir[MAX_PATH];
 static WCHAR tchDefaultDir[MAX_PATH];
@@ -215,31 +215,7 @@ static WININFO wi;
 
 static int cyReBar;
 static int cyReBarFrame;
-
-int		cxRunDlg;
-int		cxEncodingDlg;
-int		cyEncodingDlg;
-int		cxFileMRUDlg;
-int		cyFileMRUDlg;
-int		cxOpenWithDlg;
-int		cyOpenWithDlg;
-int		cxFavoritesDlg;
-int		cyFavoritesDlg;
-int		cxAddFavoritesDlg;
-int		cxModifyLinesDlg;
-int		cyModifyLinesDlg;
-int		cxEncloseSelectionDlg;
-int		cyEncloseSelectionDlg;
-int		cxInsertTagDlg;
-int		cyInsertTagDlg;
-int		xFindReplaceDlg;
-int		yFindReplaceDlg;
-int		cxFindReplaceDlg;
-
-extern int cxStyleSelectDlg;
-extern int cyStyleSelectDlg;
-extern int cxStyleCustomizeDlg;
-extern int cyStyleCustomizeDlg;
+WindowPositionRecord positionRecord;
 
 static LPWSTR lpFileList[32];
 static int cFileList = 0;
@@ -534,6 +510,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	WCHAR wchWorkingDirectory[MAX_PATH];
 	GetCurrentDirectory(COUNTOF(g_wchWorkingDirectory), g_wchWorkingDirectory);
 	GetModuleFileName(nullptr, wchWorkingDirectory, COUNTOF(wchWorkingDirectory));
+	// inline GetProgramRealPath()
+	lstrcpy(szExeRealPath, wchWorkingDirectory);
+	if (PathIsSymbolicLink(wchWorkingDirectory)) {
+		PathGetRealPath(nullptr, szExeRealPath, szExeRealPath);
+	}
 	PathRemoveFileSpec(wchWorkingDirectory);
 	SetCurrentDirectory(wchWorkingDirectory);
 
@@ -548,8 +529,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	// Command Line, Ini File and Flags
 	ParseCommandLine();
 	FindIniFile();
-	TestIniFile();
-	CreateIniFile(szIniFile);
 	LoadFlags();
 
 	// set AppUserModelID
@@ -1589,6 +1568,15 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam)
 	case WM_INITMENU:
 		MsgInitMenu(hwnd, wParam, lParam);
 		break;
+
+	case WM_ENTERMENULOOP:
+	case WM_EXITMENULOOP:
+		if (wParam == FALSE && !bShowMenu) { // main menu
+			const bool enter = umsg == WM_ENTERMENULOOP;
+			// printf("enter %d: menu: %p\n", enter, GetMenu(hwnd));
+			SetMenu(hwnd, enter ? hmenuMain : nullptr);
+		}
+		return wParam;
 
 	case WM_NOTIFY:
 		return MsgNotify(hwnd, wParam, lParam);
@@ -2822,22 +2810,7 @@ void MsgInitMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) noexcept {
 	i = IDM_VIEW_NOESCFUNC + static_cast<int>(iEscFunction);
 	CheckMenuRadioItem(hmenu, IDM_VIEW_NOESCFUNC, IDM_VIEW_ESCEXIT, i, MF_BYCOMMAND);
 
-	i = StrNotEmpty(szIniFile);
-	const uint16_t menuRequiresIni[] = {
-		CMD_OPENINIFILE,
-		IDM_VIEW_NOSAVEFINDREPL,
-		IDM_VIEW_NOSAVERECENT,
-		IDM_VIEW_REUSEWINDOW,
-		IDM_VIEW_SAVESETTINGS,
-		IDM_VIEW_SINGLEFILEINSTANCE,
-		IDM_VIEW_STICKY_WINDOW_POSITION,
-	};
-	for (unsigned k = 0; k < COUNTOF(menuRequiresIni); k++) {
-		EnableCmd(hmenu, menuRequiresIni[k], i);
-	}
-
-	CheckCmd(hmenu, IDM_VIEW_SAVESETTINGS, i && bSaveSettings);
-	EnableCmd(hmenu, IDM_VIEW_SAVESETTINGSNOW, i || StrNotEmpty(szIniFile2));
+	CheckCmd(hmenu, IDM_VIEW_SAVESETTINGS, bSaveSettings);
 
 	Style_UpdateSchemeMenu(hmenu);
 }
@@ -3643,6 +3616,7 @@ LRESULT MsgCommand(HWND hwnd, WPARAM wParam, LPARAM lParam) {
 	case IDM_INSERT_UNICODE_FSI:
 	case IDM_INSERT_UNICODE_PDI:
 	case IDM_INSERT_UNICODE_ALM:
+	case IDM_INSERT_UNICODE_SHY:
 		EditInsertUnicodeControlCharacter(LOWORD(wParam));
 		break;
 
@@ -4847,10 +4821,8 @@ LRESULT MsgCommand(HWND hwnd, WPARAM wParam, LPARAM lParam) {
 		break;
 
 	case CMD_OPENINIFILE:
-		if (StrNotEmpty(szIniFile)) {
-			CreateIniFile(szIniFile);
-			FileLoad(FileLoadFlag_Default, szIniFile);
-		}
+		CreateIniFile(szIniFile);
+		FileLoad(FileLoadFlag_Default, szIniFile);
 		break;
 
 	case IDM_SET_SYSTEM_INTEGRATION:
@@ -5351,32 +5323,24 @@ void LoadSettings() noexcept {
 	// TODO: sort loading order by item frequency to reduce UnsafeGetValue() calls
 	LPCWSTR strValue = section.GetValue(L"OpenWithDir");
 	if (StrIsEmpty(strValue)) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		if (S_OK == SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
 			lstrcpy(tchOpenWithDir, pszPath);
 			CoTaskMemFree(pszPath);
 		}
-#else
-		SHGetFolderPath(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, SHGFP_TYPE_CURRENT, tchOpenWithDir);
-#endif
 	} else {
-		PathAbsoluteFromApp(strValue, tchOpenWithDir, true);
+		PathAbsoluteFromApp(strValue, tchOpenWithDir);
 	}
 
 	strValue = section.GetValue(L"Favorites");
 	if (StrIsEmpty(strValue)) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		if (S_OK == SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
 			lstrcpy(tchFavoritesDir, pszPath);
 			CoTaskMemFree(pszPath);
 		}
-#else
-		SHGetFolderPath(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, tchFavoritesDir);
-#endif
 	} else {
-		PathAbsoluteFromApp(strValue, tchFavoritesDir, true);
+		PathAbsoluteFromApp(strValue, tchFavoritesDir);
 	}
 
 	int iValue = section.GetInt(L"PathNameFormat", TitlePathNameFormat_NameFirst);
@@ -5594,33 +5558,34 @@ void LoadSettings() noexcept {
 			wi.max	= section.GetBool(L"WindowMaximized", false);
 		}
 
-		cxRunDlg = section.GetInt(L"RunDlgSizeX", 0);
-		cxEncodingDlg = section.GetInt(L"EncodingDlgSizeX", 0);
-		cyEncodingDlg = section.GetInt(L"EncodingDlgSizeY", 0);
+		auto &record = positionRecord;
+		record.cxRunDlg = section.GetInt(L"RunDlgSizeX", 0);
+		record.cxEncodingDlg = section.GetInt(L"EncodingDlgSizeX", 0);
+		record.cyEncodingDlg = section.GetInt(L"EncodingDlgSizeY", 0);
 
-		cxFileMRUDlg = section.GetInt(L"FileMRUDlgSizeX", 0);
-		cyFileMRUDlg = section.GetInt(L"FileMRUDlgSizeY", 0);
-		cxOpenWithDlg = section.GetInt(L"OpenWithDlgSizeX", 0);
-		cyOpenWithDlg = section.GetInt(L"OpenWithDlgSizeY", 0);
-		cxFavoritesDlg = section.GetInt(L"FavoritesDlgSizeX", 0);
-		cyFavoritesDlg = section.GetInt(L"FavoritesDlgSizeY", 0);
-		cxAddFavoritesDlg = section.GetInt(L"AddFavoritesDlgSizeX", 0);
+		record.cxFileMRUDlg = section.GetInt(L"FileMRUDlgSizeX", 0);
+		record.cyFileMRUDlg = section.GetInt(L"FileMRUDlgSizeY", 0);
+		record.cxOpenWithDlg = section.GetInt(L"OpenWithDlgSizeX", 0);
+		record.cyOpenWithDlg = section.GetInt(L"OpenWithDlgSizeY", 0);
+		record.cxFavoritesDlg = section.GetInt(L"FavoritesDlgSizeX", 0);
+		record.cyFavoritesDlg = section.GetInt(L"FavoritesDlgSizeY", 0);
+		record.cxAddFavoritesDlg = section.GetInt(L"AddFavoritesDlgSizeX", 0);
 
-		cxModifyLinesDlg = section.GetInt(L"ModifyLinesDlgSizeX", 0);
-		cyModifyLinesDlg = section.GetInt(L"ModifyLinesDlgSizeY", 0);
-		cxEncloseSelectionDlg = section.GetInt(L"EncloseSelectionDlgSizeX", 0);
-		cyEncloseSelectionDlg = section.GetInt(L"EncloseSelectionDlgSizeY", 0);
-		cxInsertTagDlg = section.GetInt(L"InsertTagDlgSizeX", 0);
-		cyInsertTagDlg = section.GetInt(L"InsertTagDlgSizeY", 0);
+		record.cxModifyLinesDlg = section.GetInt(L"ModifyLinesDlgSizeX", 0);
+		record.cyModifyLinesDlg = section.GetInt(L"ModifyLinesDlgSizeY", 0);
+		record.cxEncloseSelectionDlg = section.GetInt(L"EncloseSelectionDlgSizeX", 0);
+		record.cyEncloseSelectionDlg = section.GetInt(L"EncloseSelectionDlgSizeY", 0);
+		record.cxInsertTagDlg = section.GetInt(L"InsertTagDlgSizeX", 0);
+		record.cyInsertTagDlg = section.GetInt(L"InsertTagDlgSizeY", 0);
 
-		xFindReplaceDlg = section.GetInt(L"FindReplaceDlgPosX", 0);
-		yFindReplaceDlg = section.GetInt(L"FindReplaceDlgPosY", 0);
-		cxFindReplaceDlg = section.GetInt(L"FindReplaceDlgSizeX", 0);
+		record.xFindReplaceDlg = section.GetInt(L"FindReplaceDlgPosX", 0);
+		record.yFindReplaceDlg = section.GetInt(L"FindReplaceDlgPosY", 0);
+		record.cxFindReplaceDlg = section.GetInt(L"FindReplaceDlgSizeX", 0);
 
-		cxStyleSelectDlg = section.GetInt(L"StyleSelectDlgSizeX", 0);
-		cyStyleSelectDlg = section.GetInt(L"StyleSelectDlgSizeY", 0);
-		cxStyleCustomizeDlg = section.GetInt(L"StyleCustomizeDlgSizeX", 0);
-		cyStyleCustomizeDlg = section.GetInt(L"StyleCustomizeDlgSizeY", 0);
+		record.cxStyleSelectDlg = section.GetInt(L"StyleSelectDlgSizeX", 0);
+		record.cyStyleSelectDlg = section.GetInt(L"StyleSelectDlgSizeY", 0);
+		record.cxStyleCustomizeDlg = section.GetInt(L"StyleCustomizeDlgSizeX", 0);
+		record.cyStyleCustomizeDlg = section.GetInt(L"StyleCustomizeDlgSizeY", 0);
 	}
 
 	section.Free();
@@ -5632,21 +5597,7 @@ void LoadSettings() noexcept {
 
 void SaveSettingsNow(bool bOnlySaveStyle, bool bQuiet) noexcept {
 	bool bCreateFailure = false;
-
-	if (StrIsEmpty(szIniFile)) {
-		if (StrNotEmpty(szIniFile2)) {
-			if (CreateIniFile(szIniFile2)) {
-				lstrcpy(szIniFile, szIniFile2);
-				StrCpyEx(szIniFile2, L"");
-			} else {
-				bCreateFailure = true;
-			}
-		} else {
-			return;
-		}
-	}
-
-	if (!bCreateFailure) {
+	{
 		LPCWSTR section = bOnlySaveStyle ? INI_SECTION_NAME_STYLES : INI_SECTION_NAME_SETTINGS;
 		if (WritePrivateProfileString(section, L"WriteTest", L"ok", szIniFile)) {
 			BeginWaitCursor();
@@ -5703,9 +5654,9 @@ void SaveSettings(bool bSaveSettingsNow) noexcept {
 	IniSectionBuilder section = { pIniSectionBuf };
 	section.SetBoolEx(L"SaveSettings", bSaveSettings, true);
 
-	PathRelativeToApp(tchOpenWithDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, true, flagPortableMyDocs);
+	PathRelativeToApp(tchOpenWithDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, flagPortableMyDocs);
 	section.SetString(L"OpenWithDir", wchTmp);
-	PathRelativeToApp(tchFavoritesDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, true, flagPortableMyDocs);
+	PathRelativeToApp(tchFavoritesDir, wchTmp, FILE_ATTRIBUTE_DIRECTORY, flagPortableMyDocs);
 	section.SetString(L"Favorites", wchTmp);
 	section.SetIntEx(L"PathNameFormat", static_cast<int>(iPathNameFormat), TitlePathNameFormat_NameFirst);
 	if (!bStickyWindowPosition) {
@@ -5857,66 +5808,40 @@ void SaveWindowPosition(WCHAR *pIniSectionBuf) noexcept{
 	section.SetInt(L"WindowSizeY", wi.cy);
 	section.SetBoolEx(L"WindowMaximized", wi.max, false);
 
-	section.SetIntEx(L"RunDlgSizeX", cxRunDlg, 0);
-	section.SetIntEx(L"EncodingDlgSizeX", cxEncodingDlg, 0);
-	section.SetIntEx(L"EncodingDlgSizeY", cyEncodingDlg, 0);
+	const auto &record = positionRecord;
+	section.SetIntEx(L"RunDlgSizeX", record.cxRunDlg, 0);
+	section.SetIntEx(L"EncodingDlgSizeX", record.cxEncodingDlg, 0);
+	section.SetIntEx(L"EncodingDlgSizeY", record.cyEncodingDlg, 0);
 
-	section.SetIntEx(L"FileMRUDlgSizeX", cxFileMRUDlg, 0);
-	section.SetIntEx(L"FileMRUDlgSizeY", cyFileMRUDlg, 0);
-	section.SetIntEx(L"OpenWithDlgSizeX", cxOpenWithDlg, 0);
-	section.SetIntEx(L"OpenWithDlgSizeY", cyOpenWithDlg, 0);
-	section.SetIntEx(L"FavoritesDlgSizeX", cxFavoritesDlg, 0);
-	section.SetIntEx(L"FavoritesDlgSizeY", cyFavoritesDlg, 0);
-	section.SetIntEx(L"AddFavoritesDlgSizeX", cxAddFavoritesDlg, 0);
+	section.SetIntEx(L"FileMRUDlgSizeX", record.cxFileMRUDlg, 0);
+	section.SetIntEx(L"FileMRUDlgSizeY", record.cyFileMRUDlg, 0);
+	section.SetIntEx(L"OpenWithDlgSizeX", record.cxOpenWithDlg, 0);
+	section.SetIntEx(L"OpenWithDlgSizeY", record.cyOpenWithDlg, 0);
+	section.SetIntEx(L"FavoritesDlgSizeX", record.cxFavoritesDlg, 0);
+	section.SetIntEx(L"FavoritesDlgSizeY", record.cyFavoritesDlg, 0);
+	section.SetIntEx(L"AddFavoritesDlgSizeX", record.cxAddFavoritesDlg, 0);
 
-	section.SetIntEx(L"ModifyLinesDlgSizeX", cxModifyLinesDlg, 0);
-	section.SetIntEx(L"ModifyLinesDlgSizeY", cyModifyLinesDlg, 0);
-	section.SetIntEx(L"EncloseSelectionDlgSizeX", cxEncloseSelectionDlg, 0);
-	section.SetIntEx(L"EncloseSelectionDlgSizeY", cyEncloseSelectionDlg, 0);
-	section.SetIntEx(L"InsertTagDlgSizeX", cxInsertTagDlg, 0);
-	section.SetIntEx(L"InsertTagDlgSizeY", cyInsertTagDlg, 0);
+	section.SetIntEx(L"ModifyLinesDlgSizeX", record.cxModifyLinesDlg, 0);
+	section.SetIntEx(L"ModifyLinesDlgSizeY", record.cyModifyLinesDlg, 0);
+	section.SetIntEx(L"EncloseSelectionDlgSizeX", record.cxEncloseSelectionDlg, 0);
+	section.SetIntEx(L"EncloseSelectionDlgSizeY", record.cyEncloseSelectionDlg, 0);
+	section.SetIntEx(L"InsertTagDlgSizeX", record.cxInsertTagDlg, 0);
+	section.SetIntEx(L"InsertTagDlgSizeY", record.cyInsertTagDlg, 0);
 
-	section.SetIntEx(L"FindReplaceDlgPosX", xFindReplaceDlg, 0);
-	section.SetIntEx(L"FindReplaceDlgPosY", yFindReplaceDlg, 0);
-	section.SetIntEx(L"FindReplaceDlgSizeX", cxFindReplaceDlg, 0);
+	section.SetIntEx(L"FindReplaceDlgPosX", record.xFindReplaceDlg, 0);
+	section.SetIntEx(L"FindReplaceDlgPosY", record.yFindReplaceDlg, 0);
+	section.SetIntEx(L"FindReplaceDlgSizeX", record.cxFindReplaceDlg, 0);
 
-	section.SetIntEx(L"StyleSelectDlgSizeX", cxStyleSelectDlg, 0);
-	section.SetIntEx(L"StyleSelectDlgSizeY", cyStyleSelectDlg, 0);
-	section.SetIntEx(L"StyleCustomizeDlgSizeX", cxStyleCustomizeDlg, 0);
-	section.SetIntEx(L"StyleCustomizeDlgSizeY", cyStyleCustomizeDlg, 0);
+	section.SetIntEx(L"StyleSelectDlgSizeX", record.cxStyleSelectDlg, 0);
+	section.SetIntEx(L"StyleSelectDlgSizeY", record.cyStyleSelectDlg, 0);
+	section.SetIntEx(L"StyleCustomizeDlgSizeX", record.cxStyleCustomizeDlg, 0);
+	section.SetIntEx(L"StyleCustomizeDlgSizeY", record.cyStyleCustomizeDlg, 0);
 
 	SaveIniSection(sectionName, pIniSectionBuf);
 }
 
 void ClearWindowPositionHistory() noexcept {
-	cxRunDlg = 0;
-	cxEncodingDlg = 0;
-	cyEncodingDlg = 0;
-
-	cxFileMRUDlg = 0;
-	cyFileMRUDlg = 0;
-	cxOpenWithDlg = 0;
-	cyOpenWithDlg = 0;
-	cxFavoritesDlg = 0;
-	cyFavoritesDlg = 0;
-	cxAddFavoritesDlg = 0;
-
-	cxModifyLinesDlg = 0;
-	cyModifyLinesDlg = 0;
-	cxEncloseSelectionDlg = 0;
-	cyEncloseSelectionDlg = 0;
-	cxInsertTagDlg = 0;
-	cyInsertTagDlg = 0;
-
-	xFindReplaceDlg = 0;
-	yFindReplaceDlg = 0;
-	cxFindReplaceDlg = 0;
-
-	cxStyleSelectDlg = 0;
-	cyStyleSelectDlg = 0;
-	cxStyleCustomizeDlg = 0;
-	cyStyleCustomizeDlg = 0;
-
+	memset(&positionRecord, 0, sizeof(positionRecord));
 	IniDeleteAllSection(INI_SECTION_NAME_WINDOW_POSITION);
 }
 
@@ -5925,12 +5850,16 @@ void ClearWindowPositionHistory() noexcept {
 // ParseCommandLine()
 //
 //
+namespace {
+
 enum CommandParseState {
 	CommandParseState_None,
 	CommandParseState_Consumed,
 	CommandParseState_Argument,
 	CommandParseState_Unknown,
 };
+
+}
 
 CommandParseState ParseCommandLineEncoding(LPCWSTR opt) noexcept {
 	int flag = IDM_ENCODING_UNICODE;
@@ -6004,16 +5933,6 @@ CommandParseState ParseCommandLineOption(LPWSTR lp1, LPWSTR lp2) noexcept {
 					LocalFree(lpEncodingArg);
 				}
 				lpEncodingArg = StrDup(lp1);
-				state = CommandParseState_Consumed;
-			}
-			break;
-
-		case L'F':
-			state = CommandParseState_Argument;
-			if (ExtractFirstArgument(lp2, lp1, lp2)) {
-				lstrcpyn(szIniFile, lp1, COUNTOF(szIniFile));
-				TrimString(szIniFile);
-				PathUnquoteSpaces(szIniFile);
 				state = CommandParseState_Consumed;
 			}
 			break;
@@ -6145,13 +6064,6 @@ CommandParseState ParseCommandLineOption(LPWSTR lp1, LPWSTR lp2) noexcept {
 		case L'C':
 			if (chNext == L'R') {
 				flagSetEOLMode = IDM_LINEENDINGS_CR - IDM_LINEENDINGS_CRLF + 1;
-				state = CommandParseState_Consumed;
-			}
-			break;
-
-		case L'F':
-			if (chNext == L'0' || chNext == L'O') {
-				StrCpyEx(szIniFile, L"*?");
 				state = CommandParseState_Consumed;
 			}
 			break;
@@ -6646,195 +6558,64 @@ void LoadFlags() noexcept {
 // FindIniFile()
 //
 //
-bool CheckIniFile(LPWSTR lpszFile, LPCWSTR lpszModule) noexcept {
-	WCHAR tchFileExpanded[MAX_PATH];
-	ExpandEnvironmentStrings(lpszFile, tchFileExpanded, COUNTOF(tchFileExpanded));
-
-	if (PathIsRelative(tchFileExpanded)) {
-		WCHAR tchBuild[MAX_PATH];
-		// program directory
-		lstrcpy(tchBuild, lpszModule);
-		lstrcpy(PathFindFileName(tchBuild), tchFileExpanded);
-		if (PathIsFile(tchBuild)) {
-			lstrcpy(lpszFile, tchBuild);
-			return true;
-		}
-
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
-		const KNOWNFOLDERID * const rfidList[] = {
-			&FOLDERID_LocalAppData,
-			&FOLDERID_RoamingAppData,
-			&FOLDERID_Profile,
-		};
-		for (UINT i = 0; i < COUNTOF(rfidList); i++) {
-			LPWSTR pszPath = nullptr;
-			if (S_OK == SHGetKnownFolderPath(*rfidList[i], KF_FLAG_DEFAULT, nullptr, &pszPath)) {
-				PathCombine(tchBuild, pszPath, WC_NOTEPAD4);
-				CoTaskMemFree(pszPath);
-				PathAppend(tchBuild, tchFileExpanded);
-				if (PathIsFile(tchBuild)) {
-					lstrcpy(lpszFile, tchBuild);
-					return true;
-				}
-			}
-		}
-#else
-		const int csidlList[] = {
-			// %LOCALAPPDATA%
-			// C:\Users\<username>\AppData\Local
-			// C:\Documents and Settings\<username>\Local Settings\Application Data
-			CSIDL_LOCAL_APPDATA,
-			// %APPDATA%
-			// C:\Users\<username>\AppData\Roaming
-			// C:\Documents and Settings\<username>\Application Data
-			CSIDL_APPDATA,
-			// Home
-			// C:\Users\<username>
-			CSIDL_PROFILE,
-		};
-		for (UINT i = 0; i < COUNTOF(csidlList); i++) {
-			if (S_OK == SHGetFolderPath(nullptr, csidlList[i], nullptr, SHGFP_TYPE_CURRENT, tchBuild)) {
-				PathAppend(tchBuild, WC_NOTEPAD4);
-				PathAppend(tchBuild, tchFileExpanded);
-				if (PathIsFile(tchBuild)) {
-					lstrcpy(lpszFile, tchBuild);
-					return true;
-				}
-			}
-		}
-#endif
-	} else if (PathIsFile(tchFileExpanded)) {
-		lstrcpy(lpszFile, tchFileExpanded);
-		return true;
-	}
-
-	return false;
-}
-
-bool CheckIniFileRedirect(LPWSTR lpszFile, LPCWSTR lpszModule, LPCWSTR redirectKey) noexcept {
-	WCHAR tch[MAX_PATH];
-	if (GetPrivateProfileString(INI_SECTION_NAME_NOTEPAD4, redirectKey, L"", tch, COUNTOF(tch), lpszFile)) {
-		if (CheckIniFile(tch, lpszModule)) {
-			lstrcpy(lpszFile, tch);
-		} else {
-			WCHAR tchFileExpanded[MAX_PATH];
-			ExpandEnvironmentStrings(tch, tchFileExpanded, COUNTOF(tchFileExpanded));
-			if (PathIsRelative(tchFileExpanded)) {
-				lstrcpy(lpszFile, lpszModule);
-				lstrcpy(PathFindFileName(lpszFile), tchFileExpanded);
-			} else {
-				lstrcpy(lpszFile, tchFileExpanded);
-			}
-		}
-		return true;
-	}
-	return false;
-}
-
-bool FindIniFile() noexcept {
-	if (StrEqualEx(szIniFile, L"*?")) {
-		return false;
-	}
-
-	WCHAR tchTest[MAX_PATH];
-	WCHAR tchModule[MAX_PATH];
-	GetProgramRealPath(tchModule, COUNTOF(tchModule));
-
-	if (StrNotEmpty(szIniFile)) {
-		if (!CheckIniFile(szIniFile, tchModule)) {
-			ExpandEnvironmentStringsEx(szIniFile, COUNTOF(szIniFile));
-			if (PathIsRelative(szIniFile)) {
-				lstrcpy(tchTest, tchModule);
-				PathRemoveFileSpec(tchTest);
-				PathAppend(tchTest, szIniFile);
-				lstrcpy(szIniFile, tchTest);
-			}
-		}
-		return true;
-	}
-
-	lstrcpy(tchTest, PathFindFileName(tchModule));
-	PathRenameExtension(tchTest, L".ini");
-	bool bFound = CheckIniFile(tchTest, tchModule);
-
-	if (!bFound) {
-		lstrcpy(tchTest, L"Notepad4.ini");
-		bFound = CheckIniFile(tchTest, tchModule);
-	}
-
-	if (bFound) {
-		// allow two redirections: administrator -> user -> custom
-		if (CheckIniFileRedirect(tchTest, tchModule, L"Notepad4.ini")) {
-			CheckIniFileRedirect(tchTest, tchModule, L"Notepad4.ini");
-		}
-		lstrcpy(szIniFile, tchTest);
-	} else {
-		lstrcpy(szIniFile, tchModule);
-		PathRenameExtension(szIniFile, L".ini");
-	}
-
-	return true;
-}
-
-bool TestIniFile() noexcept {
-	if (StrEqualEx(szIniFile, L"*?")) {
-		StrCpyEx(szIniFile2, L"");
-		StrCpyEx(szIniFile, L"");
-		return false;
-	}
-
-	DWORD dwFileAttributes = GetFileAttributes(szIniFile);
-	if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-		return true;
-	}
-
-	if ((dwFileAttributes != INVALID_FILE_ATTRIBUTES) || (StrNotEmpty(szIniFile) && szIniFile[lstrlen(szIniFile) - 1] == L'\\')) {
-		WCHAR wchModule[MAX_PATH];
-		GetProgramRealPath(wchModule, COUNTOF(wchModule));
-		PathAppend(szIniFile, PathFindFileName(wchModule));
-		PathRenameExtension(szIniFile, L".ini");
-		dwFileAttributes = GetFileAttributes(szIniFile);
-		if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-			lstrcpy(PathFindFileName(szIniFile), L"Notepad4.ini");
-			dwFileAttributes = GetFileAttributes(szIniFile);
-			if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-				lstrcpy(PathFindFileName(szIniFile), PathFindFileName(wchModule));
-				PathRenameExtension(szIniFile, L".ini");
-				dwFileAttributes = GetFileAttributes(szIniFile);
-			}
+void FindIniFile() noexcept {
+	LPCWSTR tchModule = szExeRealPath;
+	const size_t nameIndex = PathFindFileName(tchModule) - tchModule;
+	WCHAR appData[MAX_PATH];
+	LPWSTR lpszIniFile = szIniFile;
+	bool portable = true;
+	if (StrStr(tchModule, L"WinGet") != nullptr || StrStr(tchModule, L"Chocolatey") != nullptr) {
+		// %LOCALAPPDATA%\Microsoft\WinGet\Packages
+		// ChocolateyInstall
+		LPWSTR pszPath = nullptr;
+		// %LOCALAPPDATA%
+		// C:\Users\<username>\AppData\Local
+		// C:\Documents and Settings\<username>\Local Settings\Application Data
+		if (S_OK == SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &pszPath)) {
+			// always use %LOCALAPPDATA%\Notepad4 for non-portable installation
+			portable = false;
+			PathCombine(appData, pszPath, WC_NOTEPAD4);
+			lstrcpy(lpszIniFile, appData);
+			PathAppend(lpszIniFile, L"Notepad4.ini");
+			CoTaskMemFree(pszPath);
 		}
 	}
 
-	if ((dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-		lstrcpy(szIniFile2, szIniFile);
-		StrCpyEx(szIniFile, L"");
-		return false;
+	if (portable) {
+		memcpy(lpszIniFile, tchModule, nameIndex*sizeof(WCHAR));
+		lstrcpy(&lpszIniFile[nameIndex], L"Notepad4.ini");
 	}
-
-	return true;
-}
-
-void FindExtraIniFile(LPWSTR lpszIniFile, LPCWSTR defaultName, LPCWSTR redirectKey) noexcept {
-	if (StrNotEmpty(szIniFile)) {
-		WCHAR tch[MAX_PATH];
-		if (GetPrivateProfileString(INI_SECTION_NAME_NOTEPAD4, redirectKey, L"", tch, COUNTOF(tch), szIniFile)) {
-			if (FindUserResourcePath(tch, lpszIniFile)) {
-				return;
-			}
+	if (!PathIsFile(lpszIniFile)) {
+		if (!portable) {
+			SHCreateDirectoryEx(nullptr, appData, nullptr);
 		}
-	}
-	if (FindUserResourcePath(defaultName, lpszIniFile)) {
-		return;
+		WCHAR source[MAX_PATH];
+		memcpy(source, tchModule, nameIndex*sizeof(WCHAR));
+		lstrcpy(&source[nameIndex], L"Notepad4.ini-default");
+		CopyFile(source, lpszIniFile, TRUE);
+
+		if (portable) {
+			memcpy(appData, source, nameIndex*sizeof(WCHAR));
+			appData[nameIndex] = L'\0';
+		}
+		lstrcpy(&source[nameIndex], L"Notepad4 DarkTheme.ini-default");
+		PathAppend(appData, L"Notepad4 DarkTheme.ini");
+		CopyFile(source, appData, TRUE);
 	}
 
-	if (StrNotEmpty(szIniFile)) {
-		// relative to program ini file
-		lstrcpy(lpszIniFile, szIniFile);
-	} else {
-		// relative to program exe file
-		GetProgramRealPath(lpszIniFile, MAX_PATH);
+	// inline CreateIniFile() to avoid slow directory creation
+	HANDLE hFile = CreateFile(lpszIniFile,
+					   GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hFile != INVALID_HANDLE_VALUE) {
+		LARGE_INTEGER fileSize;
+		fileSize.QuadPart = 0;
+		if (GetFileSizeEx(hFile, &fileSize) && fileSize.QuadPart < 2) {
+			DWORD dw;
+			WriteFile(hFile, L"\xFEFF[Notepad4]\r\n", 26, &dw, nullptr);
+		}
+		CloseHandle(hFile);
 	}
-	lstrcpy(PathFindFileName(lpszIniFile), defaultName);
 }
 
 bool CreateIniFile(LPCWSTR lpszIniFile) noexcept {
@@ -7039,11 +6820,9 @@ void UpdateStatusbar() noexcept {
 	static int cachedWidth[StatusItem_ItemCount];
 	int aWidth[StatusItem_ItemCount];
 	HWND hwnd = hwndStatus;
-	// inline StatusCalcPaneWidth() function
 	HDC hdc = GetDC(hwnd);
-	HFONT hfont = GetWindowFont(hwnd);
-	HFONT hfold = SelectFont(hdc, hfont);
-	const int mmode = SetMapMode(hdc, MM_TEXT);
+	HFONT font = GetWindowFont(hwnd);
+	HFONT fontOld = SelectFont(hdc, font);
 	int totalWidth = 0;
 	for (int i = 0; i < StatusItem_ItemCount; i++) {
 		int width;
@@ -7052,7 +6831,7 @@ void UpdateStatusbar() noexcept {
 			LPCWSTR lpsz = items[i];
 			//GetTextExtentPoint32(hdc, lpsz, lstrlen(lpsz), &size);
 			GetTextExtentExPoint(hdc, lpsz, lstrlen(lpsz), 0, nullptr, nullptr, &size);
-			width = NP2_align_up(size.cx + 9, 8);
+			width = NP2_align_up(size.cx + size.cy/2U, 8);
 			cachedWidth[i] = width;
 		} else {
 			width = cachedWidth[i];
@@ -7062,8 +6841,7 @@ void UpdateStatusbar() noexcept {
 		totalWidth += width;
 		aWidth[i] = width;
 	}
-	SetMapMode(hdc, mmode);
-	SelectObject(hdc, hfold);
+	SelectFont(hdc, fontOld);
 	ReleaseDC(hwnd, hdc);
 
 	const int thumb = SystemMetricsForDpi(SM_CXHTHUMB, g_uCurrentDPI);
@@ -7216,7 +6994,8 @@ bool FileIO(bool fLoad, LPWSTR pszFile, FileSaveFlag flag, EditFileIOStatus &sta
 //
 //
 bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
-	WCHAR tch[MAX_PATH] = L"";
+	WCHAR tchPath[MAX_PATH];
+	SetStrEmpty(tchPath);
 	bool fSuccess = false;
 	bool bRestoreView = false;
 	Sci_Position iCurPos = 0;
@@ -7230,7 +7009,7 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 	bool keepCurrentLexer = false;
 
 	if (!(loadFlag & FileLoadFlag_New) && StrNotEmpty(lpszFile)) {
-		lstrcpy(tch, lpszFile);
+		lstrcpy(tchPath, lpszFile);
 		if (lpszFile == szCurFile || PathEqual(lpszFile, szCurFile)) {
 			iCurPos = SciCall_GetCurrentPos();
 			iAnchorPos = SciCall_GetAnchor();
@@ -7253,10 +7032,10 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 	}
 
 	if (loadFlag & FileLoadFlag_New) {
-		StrCpyEx(szCurFile, L"");
+		SetStrEmpty(szCurFile);
 		SetDlgItemText(hwndMain, IDC_FILENAME, szCurFile);
 		if (!keepTitleExcerpt) {
-			StrCpyEx(szTitleExcerpt, L"");
+			SetStrEmpty(szTitleExcerpt);
 		}
 		fvCurFile.Init(nullptr, 0);
 		EditSetEmptyText();
@@ -7279,41 +7058,47 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 			iFileWatchingMode = FileWatchingMode_None;
 		}
 		InstallFileWatching(true);
-
 		return true;
 	}
 
 	if (!fSuccess) {
-		if (!OpenFileDlg(tch, COUNTOF(tch), nullptr)) {
+		if (!OpenFileDlg(tchPath, COUNTOF(tchPath), nullptr)) {
 			return false;
 		}
 	}
 	fSuccess = false;
 
-	WCHAR szFileName[MAX_PATH] = L"";
-	ExpandEnvironmentStringsEx(tch, COUNTOF(tch));
-
-	if (PathIsRelative(tch)) {
-		PathCombine(szFileName, g_wchWorkingDirectory, tch);
-	} else {
-		lstrcpy(szFileName, tch);
+	WCHAR szFile[MAX_PATH];
+	SetStrEmpty(szFile);
+	LPWSTR pszFile = tchPath;
+	LPWSTR pszPath = szFile;
+	if (ExpandEnvironmentStringsEx(tchPath, szFile)) {
+		pszFile = szFile;
+		pszPath = tchPath;
 	}
 
-	if (PathCanonicalize(tch, szFileName)) {
-		lstrcpy(szFileName, tch);
+	if (PathIsRelative(pszFile)) {
+		PathCombine(pszPath, g_wchWorkingDirectory, pszFile);
+		wchar_t * const temp = pszFile;
+		pszFile = pszPath;
+		pszPath = temp;
 	}
-	GetLongPathName(szFileName, szFileName, COUNTOF(szFileName));
-	PathGetLnkPath(szFileName, szFileName);
+
+	if (PathCanonicalize(pszPath, pszFile)) {
+		pszFile = pszPath;
+	}
+	GetLongPathName(pszFile, pszFile, COUNTOF(szFile));
+	PathGetLnkPath(pszFile, pszFile);
 
 	EditFileIOStatus status{};
 	status.iEncoding = iCurrentEncoding;
 	status.iEOLMode = iCurrentEOLMode;
 
 	// Ask to create a new file...
-	if (!(loadFlag & FileLoadFlag_Reload) && !PathIsFile(szFileName)) {
-		const int result = flagQuietCreate ? IDYES : MsgBoxWarn(MB_YESNOCANCEL, IDS_ASK_CREATE, szFileName);
+	if (!(loadFlag & FileLoadFlag_Reload) && !PathIsFile(pszFile)) {
+		const int result = flagQuietCreate ? IDYES : MsgBoxWarn(MB_YESNOCANCEL, IDS_ASK_CREATE, pszFile);
 		if (result == IDYES) {
-			HANDLE hFile = CreateFile(szFileName,
+			HANDLE hFile = CreateFile(pszFile,
 									  GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
 									  nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 			dwLastIOError = GetLastError();
@@ -7341,7 +7126,7 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 			return false;
 		}
 	} else {
-		fSuccess = FileIO(true, szFileName, FileSaveFlag_Default, status);
+		fSuccess = FileIO(true, pszFile, FileSaveFlag_Default, status);
 		if (fSuccess) {
 			iCurrentEncoding = status.iEncoding;
 			iCurrentEOLMode = status.iEOLMode;
@@ -7349,10 +7134,10 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 	}
 
 	if (fSuccess) {
-		lstrcpy(szCurFile, szFileName);
+		lstrcpy(szCurFile, pszFile);
 		SetDlgItemText(hwndMain, IDC_FILENAME, szCurFile);
 		if (!keepTitleExcerpt) {
-			StrCpyEx(szTitleExcerpt, L"");
+			SetStrEmpty(szTitleExcerpt);
 		}
 		iOriginalEncoding = iCurrentEncoding;
 		bDocumentModified = false;
@@ -7382,9 +7167,9 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 			UpdateLineNumberWidth();
 		}
 
-		mruFile.Add(szFileName);
+		mruFile.Add(pszFile);
 		if (flagUseSystemMRU == TripleBoolean_True) {
-			SHAddToRecentDocs(SHARD_PATHW, szFileName);
+			SHAddToRecentDocs(SHARD_PATHW, pszFile);
 		}
 
 		AutoSave_Stop(!(loadFlag & FileLoadFlag_Reload));
@@ -7461,7 +7246,7 @@ bool FileLoad(FileLoadFlag loadFlag, LPCWSTR lpszFile) {
 			}
 		}
 	} else if (!status.bFileTooBig) {
-		MsgBoxLastError(MB_OK, IDS_ERR_LOADFILE, szFileName);
+		MsgBoxLastError(MB_OK, IDS_ERR_LOADFILE, pszFile);
 	}
 
 	return fSuccess;
@@ -7677,15 +7462,17 @@ void EditApplyDefaultEncoding(LPCEDITLEXER pLex, BOOL bLexerChanged) noexcept {
 // OpenFileDlg()
 //
 //
-void SetupInitialOpenSaveDir(LPWSTR tchInitialDir, DWORD cchInitialDir, LPCWSTR lpstrInitialDir) noexcept {
-	tchInitialDir[0] = L'\0';
+void SetupInitialOpenSaveDir(wchar_t (&tchInitialDir)[MAX_PATH], LPCWSTR lpstrInitialDir) noexcept {
+	SetStrEmpty(tchInitialDir);
 	if (StrNotEmpty(lpstrInitialDir)) {
 		lstrcpy(tchInitialDir, lpstrInitialDir);
 	} else if (StrNotEmpty(szCurFile)) {
 		lstrcpy(tchInitialDir, szCurFile);
 		PathRemoveFileSpec(tchInitialDir);
 	} else if (StrNotEmpty(tchDefaultDir)) {
-		ExpandEnvironmentStrings(tchDefaultDir, tchInitialDir, cchInitialDir);
+		if (!ExpandEnvironmentStringsEx(tchDefaultDir, tchInitialDir)) {
+			lstrcpy(tchInitialDir, tchDefaultDir);
+		}
 		if (PathIsRelative(tchInitialDir)) {
 			WCHAR tchModule[MAX_PATH];
 			GetModuleFileName(nullptr, tchModule, COUNTOF(tchModule));
@@ -7703,9 +7490,9 @@ void SetupInitialOpenSaveDir(LPWSTR tchInitialDir, DWORD cchInitialDir, LPCWSTR 
 
 BOOL OpenFileDlg(LPWSTR lpstrFile, int cchFile, LPCWSTR lpstrInitialDir) noexcept {
 	WCHAR tchInitialDir[MAX_PATH];
-	SetupInitialOpenSaveDir(tchInitialDir, COUNTOF(tchInitialDir), lpstrInitialDir);
+	SetupInitialOpenSaveDir(tchInitialDir, lpstrInitialDir);
 	WCHAR szFile[MAX_PATH];
-	szFile[0] = L'\0';
+	SetStrEmpty(szFile);
 	int lexers[1 + OPENDLG_MAX_LEXER_COUNT]{}; // 1-based filter index
 	LPWSTR szFilter = Style_GetOpenDlgFilterStr(true, szCurFile, lexers);
 
@@ -7744,7 +7531,7 @@ BOOL OpenFileDlg(LPWSTR lpstrFile, int cchFile, LPCWSTR lpstrInitialDir) noexcep
 //
 BOOL SaveFileDlg(FileSaveFlag saveFlag, LPWSTR lpstrFile, int cchFile, LPCWSTR lpstrInitialDir) noexcept {
 	WCHAR tchInitialDir[MAX_PATH];
-	SetupInitialOpenSaveDir(tchInitialDir, COUNTOF(tchInitialDir), lpstrInitialDir);
+	SetupInitialOpenSaveDir(tchInitialDir, lpstrInitialDir);
 	WCHAR szNewFile[MAX_PATH];
 	lstrcpy(szNewFile, lpstrFile);
 	int lexers[1 + OPENDLG_MAX_LEXER_COUNT]{}; // 1-based filter index
@@ -7883,10 +7670,12 @@ bool ActivatePrevInst() noexcept {
 	HWND hwnd = nullptr;
 	LPWSTR lpszFile = lpFileArg;
 	if (flagSingleFileInstance && lpszFile) {
-		ExpandEnvironmentStringsEx(lpszFile, static_cast<DWORD>(NP2HeapSize(lpszFile) / sizeof(WCHAR)));
+		WCHAR tchTmp[MAX_PATH];
+		if (ExpandEnvironmentStringsEx(lpszFile, tchTmp)) {
+			lstrcpy(lpszFile, tchTmp);
+		}
 
 		if (PathIsRelative(lpszFile)) {
-			WCHAR tchTmp[MAX_PATH];
 			PathCombine(tchTmp, g_wchWorkingDirectory, lpszFile);
 			lstrcpy(lpszFile, tchTmp);
 		}
@@ -7919,10 +7708,12 @@ bool ActivatePrevInst() noexcept {
 			SetForegroundWindow(hwnd);
 
 			if (lpszFile) {
-				ExpandEnvironmentStringsEx(lpszFile, static_cast<DWORD>(NP2HeapSize(lpszFile) / sizeof(WCHAR)));
+				WCHAR tchTmp[MAX_PATH];
+				if (ExpandEnvironmentStringsEx(lpszFile, tchTmp)) {
+					lstrcpy(lpszFile, tchTmp);
+				}
 
 				if (PathIsRelative(lpszFile)) {
-					WCHAR tchTmp[MAX_PATH];
 					PathCombine(tchTmp, g_wchWorkingDirectory, lpszFile);
 					lstrcpy(lpszFile, tchTmp);
 				}
@@ -8003,15 +7794,6 @@ void GetRelaunchParameters(LPWSTR szParameters, LPCWSTR lpszFile, bool newWind, 
 
 	wsprintf(tch, L" -sysmru=%i", (flagUseSystemMRU == TripleBoolean_True));
 	lstrcat(szParameters, tch);
-
-	lstrcat(szParameters, L" -f");
-	if (StrNotEmpty(szIniFile)) {
-		lstrcat(szParameters, L" \"");
-		lstrcat(szParameters, szIniFile);
-		lstrcat(szParameters, L"\"");
-	} else {
-		lstrcat(szParameters, L"0");
-	}
 
 	if (newWind) {
 		lstrcat(szParameters, L" -n");
@@ -8526,7 +8308,6 @@ void AutoSave_Stop(BOOL keepBackup) noexcept {
 LPCWSTR AutoSave_GetDefaultFolder() noexcept {
 	LPWSTR szFolder = szAutoSaveFolder;
 	if (StrIsEmpty(szFolder)) {
-#if _WIN32_WINNT >= _WIN32_WINNT_VISTA
 		LPWSTR pszPath = nullptr;
 		const HRESULT hr = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &pszPath);
 		if (hr == S_OK) {
@@ -8536,16 +8317,6 @@ LPCWSTR AutoSave_GetDefaultFolder() noexcept {
 			GetModuleFileName(nullptr, szFolder, MAX_PATH);
 			PathRemoveFileSpec(szFolder);
 		}
-#else
-		const HRESULT hr = SHGetFolderPath(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, szFolder);
-		if (hr == S_OK) {
-			PathAppend(szFolder, WC_NOTEPAD4);
-		} else {
-			GetModuleFileName(nullptr, szFolder, MAX_PATH);
-			PathRemoveFileSpec(szFolder);
-		}
-#endif
-
 		PathAppend(szFolder, L"AutoSave");
 	}
 

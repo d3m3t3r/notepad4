@@ -340,7 +340,6 @@ void ColouriseHyperTextDoc(Sci_PositionU startPos, Sci_Position length, int init
 		}
 		state = (startPos == 0) ? SCE_H_DEFAULT : state;
 	}
-	styler.StartAt(startPos);
 
 	/* Nothing handles getting out of these, so we need not start in any of them.
 	 * As we're at line start and they can't span lines, we'll re-detect them anyway */
@@ -425,6 +424,7 @@ void ColouriseHyperTextDoc(Sci_PositionU startPos, Sci_Position length, int init
 		}
 	}
 
+	styler.StartAt(startPos);
 	styler.StartSegment(startPos);
 	const Sci_Position lengthDoc = startPos + length;
 	for (Sci_Position i = startPos; i < lengthDoc; i++) {
@@ -1215,8 +1215,7 @@ void ColouriseHyperTextDoc(Sci_PositionU startPos, Sci_Position length, int init
 			break;
 		}
 
-		// Some of the above terminated their lexeme but since the same character starts
-		// the same class again, only reenter if non empty segment.
+		// Some of the above terminated their lexeme
 
 		if (state == SCE_HB_DEFAULT) {    // One of the above succeeded
 			if (ch == '\"') {
